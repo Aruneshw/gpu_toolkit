@@ -145,7 +145,7 @@ jobs:
           }) -join ';'
           if (Get-Command go -ErrorAction SilentlyContinue) { Write-Warning 'A second Go installation is still on PATH; the marker path is asserted below.' }
 
-          & .\installers\install-prebuilt.ps1 -BinaryPath $exe
+          & .\installers\install-prebuilt.ps1 -BinaryPath $exe -AllowElevated
           & $binary version
           if ($LASTEXITCODE -ne 0) { throw 'Installed binary failed to run.' }
           if (-not (Test-Path -LiteralPath $marker)) { throw 'install.json was not written.' }
@@ -155,17 +155,17 @@ jobs:
 
           Add-Content -LiteralPath $binary -Value 'tamper' -NoNewline
           $refused = $false
-          try { & .\installers\uninstall.ps1 } catch { $refused = $true }
+          try { & .\installers\uninstall.ps1 -AllowElevated } catch { $refused = $true }
           if (-not $refused) { throw 'Uninstaller removed a modified binary without -Force.' }
           if (-not (Test-Path -LiteralPath $binary)) { throw 'Refused uninstall deleted the binary.' }
 
-          & .\installers\uninstall.ps1 -Force
+          & .\installers\uninstall.ps1 -Force -AllowElevated
           if (Test-Path -LiteralPath $binary) { throw 'Uninstaller left the binary behind.' }
           if (Test-Path -LiteralPath $marker) { throw 'Uninstaller left install.json behind.' }
 
-          & .\installers\install-prebuilt.ps1 -BinaryPath $exe
+          & .\installers\install-prebuilt.ps1 -BinaryPath $exe -AllowElevated
           & $binary version
-          $clean = (& .\installers\uninstall.ps1) -join "`n"
+          $clean = (& .\installers\uninstall.ps1 -AllowElevated) -join "`n"
           if ($clean -notmatch 'verified by install\.json') { throw "Uninstaller did not use install.json: $clean" }
           if (Test-Path -LiteralPath $binary) { throw 'Clean uninstall left the binary behind.' }
           if (Test-Path -LiteralPath $marker) { throw 'Clean uninstall left install.json behind.' }

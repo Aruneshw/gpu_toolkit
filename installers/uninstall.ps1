@@ -1,13 +1,16 @@
 [CmdletBinding()]
 param(
-    [switch]$Force
+    [switch]$Force,
+
+    # Explicit override for automated test harnesses that run elevated.
+    [switch]$AllowElevated
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ($env:OS -ne 'Windows_NT') { throw 'This uninstaller requires Windows.' }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run without administrator privileges.' }
+if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) -and -not $AllowElevated) { throw 'Run without administrator privileges.' }
 if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA must be set.' }
 
 $binDir = Join-Path $env:LOCALAPPDATA 'meshcompute\bin'
