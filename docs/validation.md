@@ -53,8 +53,8 @@ Result: pass.
 ## Continuous integration
 
 GitHub Actions run
-[42248720737](https://github.com/Aruneshw/gpu_toolkit/actions/runs/42248720737)
-completed successfully. All eight jobs passed:
+[42253944180](https://github.com/Aruneshw/gpu_toolkit/actions/runs/42253944180)
+completed successfully on the dashboard/streaming commit. All eight jobs passed:
 
 - test: Ubuntu and Windows, each on Go 1.24.x and stable; race detector on Linux
 - offline build and tests with `GOPROXY=off` and `GOTOOLCHAIN=local`
