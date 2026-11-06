@@ -9,7 +9,9 @@ checkout. It is not a production-readiness or hardware-certification claim.
 - NVIDIA RTX 3050 6 GB visible to `nvidia-smi` for resource discovery.
 - No `llama-server` binary and no licensed GGUF model were present, so no real
   inference was executed.
-- No Windows machine, second physical host, or VPN link was available.
+- No second physical host or VPN link was available.
+- GitHub Actions also ran the test suite on Ubuntu and Windows runners with Go
+  1.24.x and stable (see the CI section below).
 
 ## Commands and outcomes
 
@@ -37,6 +39,21 @@ go test ./internal/agent -run TestTwoAgentTLSDispatchFixture -count=20
 ```
 
 Result: pass.
+
+## Continuous integration
+
+GitHub Actions run
+[42248720737](https://github.com/Aruneshw/gpu_toolkit/actions/runs/42248720737)
+completed successfully. All eight jobs passed:
+
+- test: Ubuntu and Windows, each on Go 1.24.x and stable; race detector on Linux
+- offline build and tests with `GOPROXY=off` and `GOTOOLCHAIN=local`
+- cross-compile: Linux amd64/arm64 and Windows amd64
+- Linux installer smoke: install, run, uninstall
+- Windows: PowerShell installer syntax parse
+
+The earlier run of the same commit series exposed a Windows-Go-1.24-only timing
+failure; finding 5 below records the fix that made CI green.
 
 ## What the automated tests exercise
 
@@ -93,12 +110,17 @@ These use one host and loopback, not a physical two-machine VPN.
 3. **Windows portability.** Unconditional Unix mode-bit checks and directory
    `fsync` made identity creation fail on Windows. These are now platform
    helpers: Unix keeps the 0700/0600 and fsync requirements; Windows relies on
-   inherited user-profile ACLs and a file flush before rename. Windows was
-   cross-compiled and vetted, not executed.
+   inherited user-profile ACLs and a file flush before rename. The full test
+   suite now runs on Windows CI; the interactive installer was not executed
+   there.
 4. **Go 1.26 test temporaries.** `testing.T.TempDir()` now creates per-test
    directories as 0775 under the default umask, which the security package
    correctly rejects. Agent tests now create a private child directory, matching
    the security tests.
+5. **Coarse probe clock on Windows Go 1.24.** A single 256 KiB loopback probe
+   measured as zero, so throughput stayed zero despite a successful transfer.
+   The probe now repeats a bounded number of times and divides total bytes by
+   aggregate elapsed time. Windows Go 1.24 CI passes after the change.
 
 ## Security review notes retained as limitations
 
@@ -122,8 +144,9 @@ These use one host and loopback, not a physical two-machine VPN.
 
 - Real GGUF loading or token generation against `llama-server`.
 - CUDA execution, GPU layer offload, or measured VRAM behavior.
-- Windows runtime behavior (build/vet only) and PowerShell installer execution.
-  CI parses the scripts; it does not run them as a non-administrator.
+- Windows deployment beyond unit/integration tests, and PowerShell installer
+  execution. CI runs the Go tests on Windows but only parses the scripts; it
+  does not run them as a non-administrator.
 - A physical two-machine VPN deployment, firewall behavior, or WAN reliability.
 - macOS, AMD, or Intel GPU targets.
 - Any distributed/model-parallel inference. RPC remains disabled and unclaimed.

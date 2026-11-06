@@ -19,8 +19,9 @@ retry or mid-generation placement change.
   builds, Linux/Windows/arm64 cross-builds, two-home TLS enrollment/status/
   revocation, and the Linux installer.
 - **Not verified here:** real GGUF inference, CUDA/GPU execution, a physical
-  two-machine VPN, Windows runtime behavior, or llama.cpp RPC. Cross-compiling
-  is not runtime testing. See [docs/validation.md](docs/validation.md).
+  two-machine VPN, Windows deployment beyond CI tests, or llama.cpp RPC.
+  Cross-compiling is not runtime testing. See
+  [docs/validation.md](docs/validation.md).
 
 RPC is deliberately not built, launched, discovered, or claimed. Sending work to
 one authenticated remote node that runs its own local model is remote
