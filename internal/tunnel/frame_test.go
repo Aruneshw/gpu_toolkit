@@ -49,3 +49,46 @@ func TestFrameShortWrite(t *testing.T) {
 		t.Fatalf("expected short write, got %v", err)
 	}
 }
+
+// FuzzReadFrame treats all bytes as hostile; successful reads must consume
+// exactly one bounded, self-consistent frame.
+func FuzzReadFrame(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0, 0, 0, 1, 0, 0, 0, 1, 'x'})
+	f.Add([]byte{0, 0, 0, 0, 255, 255, 255, 255})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := bytes.NewReader(data)
+		frame, err := ReadFrame(r)
+		if err != nil {
+			return
+		}
+		if len(data) < 8 || len(frame.Payload) > MaxPayload || int(binary.BigEndian.Uint32(data[4:8])) != len(frame.Payload) {
+			t.Fatal("accepted an invalid frame")
+		}
+		if consumed := len(data) - r.Len(); consumed != 8+len(frame.Payload) {
+			t.Fatalf("consumed %d bytes", consumed)
+		}
+	})
+}
+
+func FuzzFrameRoundTrip(f *testing.F) {
+	f.Add(uint32(0), []byte(""))
+	f.Add(uint32(1), []byte("hello"))
+	f.Fuzz(func(t *testing.T, id uint32, payload []byte) {
+		var b bytes.Buffer
+		err := WriteFrame(&b, Frame{StreamID: id, Payload: payload})
+		if len(payload) > MaxPayload {
+			if err == nil || b.Len() != 0 {
+				t.Fatal("oversized payload accepted or partially written")
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := ReadFrame(&b)
+		if err != nil || got.StreamID != id || !bytes.Equal(got.Payload, payload) || b.Len() != 0 {
+			t.Fatalf("round trip failed: %v", err)
+		}
+	})
+}
