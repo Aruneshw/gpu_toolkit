@@ -60,7 +60,6 @@ func Measure(ctx context.Context, client *http.Client, baseURL string) (Quality,
 	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	var lastErr error
 	request := func(path string, want []byte) (time.Duration, error) {
-		q.Requests++
 		child, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
 		req, e := http.NewRequestWithContext(child, http.MethodGet, strings.TrimRight(baseURL, "/")+path, nil)
@@ -90,6 +89,7 @@ func Measure(ctx context.Context, client *http.Client, baseURL string) (Quality,
 	var sum, min, max time.Duration
 	success := 0
 	for i := 0; i < PingSamples; i++ {
+		q.Requests++
 		d, e := request("/v1/ping", []byte("pong\n"))
 		if e != nil {
 			q.Failures++
@@ -109,12 +109,27 @@ func Measure(ctx context.Context, client *http.Client, baseURL string) (Quality,
 		q.Latency = sum / time.Duration(success)
 		q.Jitter = max - min
 	}
-	d, e := request("/v1/probe", probePayload)
-	if e != nil {
-		q.Failures++
-		lastErr = e
-	} else if d > 0 {
-		q.ThroughputBytesPerSecond = float64(ProbeBytes) / d.Seconds()
+	// Some platforms expose a coarse monotonic clock, so one fast probe can
+	// measure as zero. Repeat a bounded number of times and divide the total
+	// transferred bytes by the aggregate elapsed time.
+	q.Requests++
+	probeBytes := 0
+	probeStart := time.Now()
+	var probeElapsed time.Duration
+	for attempt := 0; attempt < 32; attempt++ {
+		if _, e := request("/v1/probe", probePayload); e != nil {
+			q.Failures++
+			lastErr = e
+			break
+		}
+		probeBytes += ProbeBytes
+		probeElapsed = time.Since(probeStart)
+		if probeElapsed > 0 {
+			break
+		}
+	}
+	if probeElapsed > 0 && probeBytes > 0 {
+		q.ThroughputBytesPerSecond = float64(probeBytes) / probeElapsed.Seconds()
 	}
 	q.RequestFailureRate = float64(q.Failures) / float64(q.Requests)
 	q.Available = success > 0 && q.ThroughputBytesPerSecond > 0
