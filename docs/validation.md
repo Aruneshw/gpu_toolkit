@@ -22,15 +22,18 @@ All commands were run from the repository root.
 | --- | --- |
 | `gofmt -l .` | no output |
 | `go vet ./...` | pass |
-| `go test ./... -count=1` | pass (104 test cases including subtests) |
+| `go test ./... -count=1` | pass (105 test cases including subtests) |
 | `go test -race ./... -count=1` | pass |
 | `GOPROXY=off GOTOOLCHAIN=local go build ./...` | pass |
 | `go test ./... -count=1` with `GOPROXY=off` | pass |
 | `GOOS=linux GOARCH=amd64/arm64 go build ./cmd/meshcompute` | pass |
 | `GOOS=windows GOARCH=amd64 go build ./cmd/meshcompute` | pass |
 | `GOOS=windows GOARCH=amd64 go vet ./...` | pass |
+| `GOOS=windows GOARCH=amd64 go test -c ./internal/resource` | pass (Windows test binary compiled) |
+| `make dist` | pass; Linux amd64/arm64 and Windows amd64 plus `SHA256SUMS` |
 | `sh -n installers/install.sh installers/uninstall.sh` | pass |
 | Linux installer: install, `version`, uninstall | pass; binary removed, state preserved |
+| Windows binary under Wine: `version`, `install`, `doctor`, `config set`, `cluster create`, `start`, `status` | pass; CPU-only, no PowerShell in Wine |
 
 The repeated TLS dispatch test was also run 20 times to check the oversized-body
 path:
@@ -53,17 +56,24 @@ Result: pass.
 ## Continuous integration
 
 GitHub Actions run
-[42253944180](https://github.com/Aruneshw/gpu_toolkit/actions/runs/42253944180)
-completed successfully on the dashboard/streaming commit. All eight jobs passed:
+[42258567595](https://github.com/Aruneshw/gpu_toolkit/actions/runs/42258567595)
+completed successfully on the Windows-compatibility commit. All nine jobs
+passed:
 
 - test: Ubuntu and Windows, each on Go 1.24.x and stable; race detector on Linux
 - offline build and tests with `GOPROXY=off` and `GOTOOLCHAIN=local`
 - cross-compile: Linux amd64/arm64 and Windows amd64
 - Linux installer smoke: install, run, uninstall
-- Windows: PowerShell installer syntax parse
+- Windows: PowerShell installer syntax parse for source and prebuilt installers
+- Windows prebuilt installer: install, `version`, `install.json` checksum,
+  tamper refusal, forced removal, reinstall, and clean uninstall verified
+  through the marker rather than Go build info
+- Windows Go tests now exercise the real PowerShell/CIM discovery path for CPU,
+  RAM, and disk on the runner
 
-The earlier run of the same commit series exposed a Windows-Go-1.24-only timing
-failure; finding 5 below records the fix that made CI green.
+The earlier run of the dashboard series exposed a Windows-Go-1.24-only timing
+failure; finding 5 below records the fix. The Windows-compatibility series
+exposed the elevation and WMI cold-start issues recorded as findings 6 and 7.
 
 ## What the automated tests exercise
 
@@ -139,8 +149,8 @@ visible but not used for inference.
    `fsync` made identity creation fail on Windows. These are now platform
    helpers: Unix keeps the 0700/0600 and fsync requirements; Windows relies on
    inherited user-profile ACLs and a file flush before rename. The full test
-   suite now runs on Windows CI; the interactive installer was not executed
-   there.
+   suite now runs on Windows CI, and the prebuilt installer is executed there;
+   the source-build `install.ps1` is still syntax-checked only.
 4. **Go 1.26 test temporaries.** `testing.T.TempDir()` now creates per-test
    directories as 0775 under the default umask, which the security package
    correctly rejects. Agent tests now create a private child directory, matching
@@ -149,6 +159,20 @@ visible but not used for inference.
    measured as zero, so throughput stayed zero despite a successful transfer.
    The probe now repeats a bounded number of times and divides total bytes by
    aggregate elapsed time. Windows Go 1.24 CI passes after the change.
+6. **Tailscale/CGNAT identity mismatch.** `config` accepted RFC 6598
+   `100.64.0.0/10` listen addresses, but the TLS identity layer's private-IP
+   check used `net.IP.IsPrivate` and rejected them. `privateIP` now accepts the
+   CGNAT range explicitly, with `TestPrivateIP` covering accepted and rejected
+   boundaries.
+7. **PowerShell discovery encoding.** Redirected Windows PowerShell output can
+   be UTF-8 with a BOM, UTF-16 LE/BE with a BOM, or unmarked UTF-16LE. JSON
+   decoding now normalizes those forms, and the discovery tests cover them.
+8. **CI elevation and WMI cold start.** GitHub's Windows runners are elevated,
+   so the prebuilt installer's deliberate admin refusal blocked the smoke test;
+   an explicit `-AllowElevated` switch is passed only by CI, and the default
+   still refuses. A 5-second discovery timeout also killed the first
+   `Get-CimInstance` call on a cold runner; hardware probing now allows 20
+   seconds and reports timeouts/stderr instead of a bare exit status.
 
 ## Security review notes retained as limitations
 
@@ -173,9 +197,10 @@ visible but not used for inference.
 - CUDA execution, GPU layer offload, or measured VRAM behavior. CPU-only
   inference was executed; the RTX 3050 was detected but unused.
 - Real inference over a remote node or WAN link.
-- Windows deployment beyond unit/integration tests, and PowerShell installer
-  execution. CI runs the Go tests on Windows but only parses the scripts; it
-  does not run them as a non-administrator.
+- A physical Windows machine, Windows GPU/CUDA execution, or Windows firewall
+  behavior. CI runs the Windows Go tests and the prebuilt installer; Wine runs
+  the Windows binary for CLI lifecycle checks. Neither is GPU or physical-host
+  validation, and the source-build `install.ps1` is not executed in CI.
 - A physical two-machine VPN deployment, firewall behavior, or WAN reliability.
 - macOS, AMD, or Intel GPU targets.
 - Any distributed/model-parallel inference. RPC remains disabled and unclaimed.
