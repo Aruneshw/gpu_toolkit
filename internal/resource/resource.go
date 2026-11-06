@@ -37,14 +37,20 @@ type Snapshot struct {
 	Issues                []string  `json:"issues"`
 }
 
+// command runs a short discovery probe. Windows WMI/CIM cold starts can take
+// several seconds on a busy or freshly booted machine, so this is deliberately
+// more generous than the disk probe.
 func command(ctx context.Context, name string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return out, fmt.Errorf("%w: %s", err, msg)
 		}
