@@ -614,6 +614,36 @@ func Revoke(dir, id string) error {
 	return save(dir, s)
 }
 
+// VerifyWorkerCertificate verifies an enrolled worker against the current
+// coordinator CA and revocation state. It is intended for an authenticated
+// tunnel handshake; callers must repeat authorization when appropriate and
+// disconnect existing tunnels after revocation. It does not perform a TLS
+// handshake or establish proof of possession by itself.
+func VerifyWorkerCertificate(dir string, cert *x509.Certificate) (string, error) {
+	if cert == nil || cert.IsCA {
+		return "", fail()
+	}
+	id := cert.Subject.CommonName
+	if !strings.HasPrefix(id, "worker-") || len(id) != 71 {
+		return "", fail()
+	}
+	if _, err := hex.DecodeString(strings.TrimPrefix(id, "worker-")); err != nil {
+		return "", fail()
+	}
+	s, err := load(dir)
+	if err != nil || !s.Coordinator || s.Revoked[id] {
+		return "", fail()
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(s.CA) {
+		return "", fail()
+	}
+	if _, err := cert.Verify(x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
+		return "", fail()
+	}
+	return id, nil
+}
+
 // NodeID reads the local stable identity.
 func NodeID(dir string) (string, error) {
 	s, err := load(dir)

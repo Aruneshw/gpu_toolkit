@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"io"
+	"meshcompute/internal/tunnel"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -34,6 +35,147 @@ func TestPrivateIP(t *testing.T) {
 		if privateIP(host) != nil {
 			t.Errorf("accepted non-private address %s", host)
 		}
+	}
+}
+
+func TestAuthenticatedTunnelRegistration(t *testing.T) {
+	dir, srv := coordinator(t)
+	workerDir := worker(t, dir, srv.URL)
+	otherDir, otherSrv := coordinator(t)
+	foreignDir := worker(t, otherDir, otherSrv.URL)
+	hostState, err := load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(hostState.CA) {
+		t.Fatal("host CA unavailable")
+	}
+	workerState, err := load(workerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignState, err := load(foreignDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair := func(s state) tls.Certificate {
+		p, err := tls.X509KeyPair(s.Cert, s.Key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	workerCert, foreignCert, hostCert := pair(workerState), pair(foreignState), pair(hostState)
+	broker, err := tunnel.NewBroker(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+
+	type result struct {
+		id  string
+		err error
+	}
+	attempt := func(cert *tls.Certificate, verifyClients bool) (*tls.Conn, result) {
+		t.Helper()
+		serverConfig, err := ServerTLS(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if verifyClients {
+			serverConfig.ClientAuth = tls.RequireAndVerifyClientCert
+		} else {
+			serverConfig.ClientAuth = tls.RequestClientCert
+		}
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		results := make(chan result, 1)
+		go func() {
+			raw, err := listener.Accept()
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			id, err := broker.RegisterTLS(ctx, tls.Server(raw, serverConfig), func(c *x509.Certificate) (string, error) {
+				return VerifyWorkerCertificate(dir, c)
+			})
+			results <- result{id, err}
+		}()
+		cfg := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, ServerName: "127.0.0.1"}
+		if cert != nil {
+			cfg.Certificates = []tls.Certificate{*cert}
+		}
+		client, clientErr := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", listener.Addr().String(), cfg)
+		select {
+		case r := <-results:
+			if clientErr != nil && r.err == nil {
+				t.Fatalf("client failed but server accepted: %v", clientErr)
+			}
+			return client, r
+		case <-time.After(7 * time.Second):
+			t.Fatal("tunnel registration timed out")
+			return nil, result{}
+		}
+	}
+
+	client, r := attempt(&workerCert, true)
+	if r.err != nil || r.id != workerState.ID || client == nil {
+		t.Fatalf("valid worker rejected: %+v", r)
+	}
+	conn, release, err := broker.Acquire(context.Background(), workerState.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+	writeDone := make(chan error, 1)
+	go func() { _, err := client.Write([]byte("ping")); writeDone <- err }()
+	var buf [4]byte
+	if _, err := io.ReadFull(conn, buf[:]); err != nil || string(buf[:]) != "ping" {
+		t.Fatalf("tunnel transfer: %q %v", buf[:], err)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatal(err)
+	}
+	release()
+	client.Close()
+
+	for name, tc := range map[string]struct {
+		cert   *tls.Certificate
+		verify bool
+	}{
+		"foreign group":           {&foreignCert, true},
+		"no certificate":          {nil, true},
+		"coordinator certificate": {&hostCert, true},
+		"unverified TLS":          {&workerCert, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, got := attempt(tc.cert, tc.verify)
+			if c != nil {
+				defer c.Close()
+			}
+			if got.err == nil {
+				broker.Disconnect(got.id)
+				t.Fatalf("accepted invalid worker: %s", got.id)
+			}
+		})
+	}
+	if err := Revoke(dir, workerState.ID); err != nil {
+		t.Fatal(err)
+	}
+	client, r = attempt(&workerCert, true)
+	if client != nil {
+		defer client.Close()
+	}
+	if r.err == nil {
+		broker.Disconnect(r.id)
+		t.Fatal("accepted revoked worker")
 	}
 }
 
