@@ -105,7 +105,7 @@ jobs:
       - uses: actions/checkout@v4
       - shell: pwsh
         run: |
-          foreach ($file in 'installers/install.ps1', 'installers/install-prebuilt.ps1', 'installers/uninstall.ps1') {
+          foreach ($file in 'installers/install.ps1', 'installers/install-prebuilt.ps1', 'installers/install-windows.ps1', 'installers/uninstall.ps1') {
             $null = [ScriptBlock]::Create((Get-Content -Raw $file))
           }
           Write-Output 'PowerShell installer syntax OK'
