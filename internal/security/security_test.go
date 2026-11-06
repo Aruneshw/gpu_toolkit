@@ -166,8 +166,27 @@ func TestAuthenticatedTunnelRegistration(t *testing.T) {
 			}
 		})
 	}
+	activeClient, active := attempt(&workerCert, true)
+	if active.err != nil || activeClient == nil {
+		t.Fatalf("second connection rejected: %v", active.err)
+	}
+	defer activeClient.Close()
+	_, activeRelease, err := broker.Acquire(context.Background(), workerState.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer activeRelease()
 	if err := Revoke(dir, workerState.ID); err != nil {
 		t.Fatal(err)
+	}
+	if err := activeClient.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var one [1]byte
+	if _, err := activeClient.Read(one[:]); err == nil {
+		t.Fatal("revoked active worker connection remained open")
+	} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatalf("active worker was not disconnected after revocation: %v", err)
 	}
 	client, r = attempt(&workerCert, true)
 	if client != nil {

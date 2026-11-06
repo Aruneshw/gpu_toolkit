@@ -211,3 +211,26 @@ func TestBrokerConcurrentShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStaleMonitorDoesNotDisconnectReplacement(t *testing.T) {
+	b, _ := NewBroker(1)
+	defer b.Close()
+	old, oldRemote := net.Pipe()
+	defer oldRemote.Close()
+	s, err := b.register("worker", old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Disconnect("worker")
+	replacement, replacementRemote := net.Pipe()
+	defer replacementRemote.Close()
+	if err := b.Register("worker", replacement); err != nil {
+		t.Fatal(err)
+	}
+	b.disconnectSession("worker", s)
+	conn, release, err := b.Acquire(context.Background(), "worker")
+	if err != nil || conn != replacement {
+		t.Fatalf("stale monitor removed replacement: %v", err)
+	}
+	release()
+}

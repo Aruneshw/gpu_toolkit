@@ -17,8 +17,12 @@ import (
 //
 // Ownership of conn is transferred on every call: failures close it, and the
 // broker owns it on success. Revocation of an existing connection still requires
-// the caller to invoke Disconnect, and must be synchronized with registration.
-// This primitive is not yet connected to the agent or dashboard.
+// the caller to invoke Disconnect for immediate effect. While connected, the
+// authorization callback is also rechecked approximately once per second;
+// a rejection or changed identity disconnects that session. The callback must
+// be safe for concurrent calls and must return promptly. This polling is not an
+// atomic revocation guarantee. This primitive is not yet connected to the agent
+// or dashboard.
 func (b *Broker) RegisterTLS(ctx context.Context, conn *tls.Conn, authorize func(*x509.Certificate) (string, error)) (string, error) {
 	if conn == nil {
 		return "", errors.New("TLS connection required")
@@ -48,9 +52,26 @@ func (b *Broker) RegisterTLS(ctx context.Context, conn *tls.Conn, authorize func
 	if err := handshakeCtx.Err(); err != nil {
 		return "", err
 	}
-	if err := b.Register(id, conn); err != nil {
+	s, err := b.register(id, conn)
+	if err != nil {
 		return "", err
 	}
 	registered = true
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.done:
+				return
+			case <-ticker.C:
+				current, err := authorize(state.PeerCertificates[0])
+				if err != nil || current != id {
+					b.disconnectSession(id, s)
+					return
+				}
+			}
+		}
+	}()
 	return id, nil
 }

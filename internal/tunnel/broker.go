@@ -27,6 +27,7 @@ type Broker struct {
 type session struct {
 	conn   net.Conn
 	leased bool
+	done   chan struct{}
 }
 
 func NewBroker(limit int) (*Broker, error) {
@@ -45,23 +46,29 @@ func (b *Broker) signal() {
 // Register transfers ownership of conn to the broker on success. Existing
 // identities are rejected rather than silently replacing an active session.
 func (b *Broker) Register(identity string, conn net.Conn) error {
+	_, err := b.register(identity, conn)
+	return err
+}
+
+func (b *Broker) register(identity string, conn net.Conn) (*session, error) {
 	if identity == "" || conn == nil {
-		return errors.New("worker identity and connection required")
+		return nil, errors.New("worker identity and connection required")
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
-		return ErrBrokerClosed
+		return nil, ErrBrokerClosed
 	}
 	if _, ok := b.sessions[identity]; ok {
-		return errors.New("worker already connected")
+		return nil, errors.New("worker already connected")
 	}
 	if len(b.sessions) >= b.limit {
-		return ErrBrokerFull
+		return nil, ErrBrokerFull
 	}
-	b.sessions[identity] = &session{conn: conn}
+	s := &session{conn: conn, done: make(chan struct{})}
+	b.sessions[identity] = s
 	b.signal()
-	return nil
+	return s, nil
 }
 
 // Acquire waits for a worker connection and leases it exclusively. Calling
@@ -89,6 +96,7 @@ func (b *Broker) Acquire(ctx context.Context, identity string) (net.Conn, func()
 					b.mu.Lock()
 					if b.sessions[identity] == s {
 						delete(b.sessions, identity)
+						close(s.done)
 						b.signal()
 					}
 					b.mu.Unlock()
@@ -114,12 +122,28 @@ func (b *Broker) Disconnect(identity string) {
 	s := b.sessions[identity]
 	if s != nil {
 		delete(b.sessions, identity)
+		close(s.done)
 		b.signal()
 	}
 	b.mu.Unlock()
 	if s != nil {
 		_ = s.conn.Close()
 	}
+}
+
+// disconnectSession removes only the exact session being monitored. A stale
+// monitor must not disconnect a later connection for the same worker.
+func (b *Broker) disconnectSession(identity string, s *session) {
+	b.mu.Lock()
+	if b.sessions[identity] != s {
+		b.mu.Unlock()
+		return
+	}
+	delete(b.sessions, identity)
+	close(s.done)
+	b.signal()
+	b.mu.Unlock()
+	_ = s.conn.Close()
 }
 
 // Close closes all connections and wakes waiters.
@@ -132,6 +156,9 @@ func (b *Broker) Close() error {
 	b.closed = true
 	sessions := b.sessions
 	b.sessions = make(map[string]*session)
+	for _, s := range sessions {
+		close(s.done)
+	}
 	b.signal()
 	b.mu.Unlock()
 	for _, s := range sessions {
