@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, go ${{ matrix.go }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        go: ["1.24.x", "stable"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false
+      - name: gofmt
+        if: runner.os == 'Linux' && matrix.go == 'stable'
+        shell: bash
+        run: test -z "$(gofmt -l .)"
+      - name: vet
+        run: go vet ./...
+      - name: test with race detector
+        if: runner.os == 'Linux'
+        run: go test -race ./... -count=1
+      - name: test
+        if: runner.os == 'Windows'
+        run: go test ./... -count=1
+      - name: build
+        run: go build ./...
+
+  offline:
+    name: offline build and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: build without network or toolchain downloads
+        env:
+          GOPROXY: "off"
+          GOSUMDB: "off"
+          GOTOOLCHAIN: local
+          GOWORK: "off"
+        run: |
+          go build ./...
+          go test ./... -count=1
+
+  cross:
+    name: cross-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: linux amd64 and arm64, windows amd64
+        env:
+          CGO_ENABLED: "0"
+          GOPROXY: "off"
+          GOTOOLCHAIN: local
+        run: |
+          GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/meshcompute-linux-amd64 ./cmd/meshcompute
+          GOOS=linux GOARCH=arm64 go build -trimpath -o /tmp/meshcompute-linux-arm64 ./cmd/meshcompute
+          GOOS=windows GOARCH=amd64 go build -trimpath -o /tmp/meshcompute-windows-amd64.exe ./cmd/meshcompute
+          GOOS=windows GOARCH=amd64 go vet ./...
+
+  installer-linux:
+    name: installer smoke (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: install, run, uninstall
+        env:
+          HOME: ${{ runner.temp }}/home
+          GOPROXY: "off"
+          GOSUMDB: "off"
+          GOTOOLCHAIN: local
+        run: |
+          mkdir -p "$HOME"
+          sh installers/install.sh
+          "$HOME/.local/bin/meshcompute" version
+          HOME="$HOME" sh installers/uninstall.sh
+          test ! -e "$HOME/.local/bin/meshcompute"
+
+  installer-windows-syntax:
+    name: installer syntax (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: pwsh
+        run: |
+          foreach ($file in 'installers/install.ps1', 'installers/uninstall.ps1') {
+            $null = [ScriptBlock]::Create((Get-Content -Raw $file))
+          }
+          Write-Output 'PowerShell installer syntax OK'

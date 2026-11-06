@@ -1,0 +1,366 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"meshcompute/internal/agent"
+	"meshcompute/internal/backend"
+	"meshcompute/internal/config"
+	"meshcompute/internal/model"
+	"meshcompute/internal/network"
+	"meshcompute/internal/resource"
+	"meshcompute/internal/scheduler"
+	"meshcompute/internal/security"
+	"net/http"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+func request(ctx context.Context, cl *http.Client, endpoint, path string, body any, result any) error {
+	var data []byte
+	var e error
+	if body != nil {
+		data, e = json.Marshal(body)
+		if e != nil {
+			return e
+		}
+	}
+	method := http.MethodGet
+	if body != nil {
+		method = http.MethodPost
+	}
+	req, e := http.NewRequestWithContext(ctx, method, strings.TrimRight(endpoint, "/")+path, bytes.NewReader(data))
+	if e != nil {
+		return e
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, e := cl.Do(req)
+	if e != nil {
+		return errors.New("agent unreachable or authentication failed; check start, VPN, identity, revocation and certificate expiry")
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return fmt.Errorf("agent returned HTTP %d; check backend readiness, registered model, context and permissions; request was not retried", res.StatusCode)
+	}
+	b, e := io.ReadAll(io.LimitReader(res.Body, backend.MaxResponseBytes+1))
+	if e != nil {
+		return e
+	}
+	if len(b) > backend.MaxResponseBytes {
+		return errors.New("agent response too large")
+	}
+	return json.Unmarshal(b, result)
+}
+func peer(c config.Config, name string) (string, error) {
+	if name == "local" {
+		return c.Advertise, nil
+	}
+	for _, p := range c.Peers {
+		if p.Name == name {
+			return p.Endpoint, nil
+		}
+	}
+	return "", errors.New("unknown peer; use peer add NAME HTTPS_ENDPOINT")
+}
+
+type nodeStatus struct {
+	Name    string        `json:"name"`
+	Healthy bool          `json:"healthy"`
+	Status  *agent.Status `json:"status,omitempty"`
+	Error   string        `json:"error,omitempty"`
+}
+
+func statuses(ctx context.Context, dir string, c config.Config) ([]nodeStatus, error) {
+	cl, e := security.Client(dir)
+	if e != nil {
+		return nil, e
+	}
+	defer cl.CloseIdleConnections()
+	rows := []nodeStatus{}
+	peers := append([]config.Peer{{Name: "local", Endpoint: c.Advertise}}, c.Peers...)
+	for _, p := range peers {
+		var s agent.Status
+		bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
+		e := request(bounded, cl, p.Endpoint, "/v1/status", nil, &s)
+		cancel()
+		r := nodeStatus{Name: p.Name, Healthy: e == nil}
+		if e != nil {
+			r.Error = e.Error()
+		} else {
+			r.Status = &s
+		}
+		rows = append(rows, r)
+	}
+	return rows, nil
+}
+func operational(ctx context.Context, dir string, c config.Config, command string, args []string, in io.Reader, out io.Writer) error {
+	registry := filepath.Join(dir, "models")
+	switch command {
+	case "start":
+		if len(args) != 0 {
+			return errors.New("start takes no arguments")
+		}
+		return agent.New(dir, c, out).Serve(ctx)
+	case "status":
+		if len(args) != 0 {
+			return errors.New("status takes no arguments")
+		}
+		s, e := statuses(ctx, dir, c)
+		if e != nil {
+			return e
+		}
+		return writeJSON(out, s)
+	case "monitor":
+		interval := 5 * time.Second
+		if e := flags("monitor", args, func(f *flag.FlagSet) { f.DurationVar(&interval, "interval", interval, "refresh") }); e != nil {
+			return e
+		}
+		if interval < time.Second {
+			return errors.New("interval must be at least 1s")
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			s, e := statuses(ctx, dir, c)
+			if e != nil {
+				return e
+			}
+			if e = writeJSON(out, s); e != nil {
+				return e
+			}
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+			}
+		}
+	case "doctor":
+		if len(args) != 0 {
+			return errors.New("doctor takes no arguments")
+		}
+		s, e := resource.Discover(ctx, dir)
+		if e != nil {
+			return e
+		}
+		_, identityErr := security.NodeID(dir)
+		_, binaryErr := exec.LookPath("llama-server")
+		b, _ := backend.New(c.BackendURL)
+		bounded, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		_, backendErr := b.Health(bounded)
+		provider, _ := network.DetectTailscale(bounded)
+		// Explicit allowlist: no raw configuration, addresses, paths, aliases, or errors.
+		return writeJSON(out, map[string]any{"os": s.OS, "arch": s.Arch, "logical_cpus": s.LogicalCPUs, "ram_total_bytes": s.RAMTotalBytes, "ram_available_bytes": s.RAMAvailableBytes, "gpu_count": len(s.GPUs), "gpu_discovery_available": s.GPUDiscoveryAvailable, "identity_present": identityErr == nil, "llama_server_on_path": binaryErr == nil, "backend_ready": backendErr == nil, "tailscale_available": provider.Available, "distributed_verified": false, "guidance": "Missing backend: follow docs/backend.md. Missing identity: cluster create or join. VPN setup is explicit. CPU availability and unknown hardware metrics are not inferred."})
+	case "model":
+		if len(args) == 1 && args[0] == "list" {
+			entries, e := model.List(registry)
+			if e != nil {
+				return e
+			}
+			return writeJSON(out, entries)
+		}
+		if len(args) == 3 && args[0] == "add" {
+			entry, e := model.Add(registry, args[1], args[2])
+			if e != nil {
+				return e
+			}
+			return writeJSON(out, entry)
+		}
+		return errors.New("usage: model add NAME LOCAL_GGUF_PATH | model list (downloads are not automatic)")
+	case "backend":
+		if len(args) == 1 && args[0] == "list" {
+			b, e := backend.New(c.BackendURL)
+			if e != nil {
+				return e
+			}
+			bounded, cancel := context.WithTimeout(ctx, 3*time.Second)
+			defer cancel()
+			caps, e := b.Health(bounded)
+			return writeJSON(out, map[string]any{"adapter": "llama.cpp", "ready": e == nil, "capabilities": caps, "rpc_enabled": false, "guidance": "Use backend serve with a compatible llama-server binary; see docs/backend.md."})
+		}
+		if len(args) >= 2 && args[0] == "serve" {
+			binary := ""
+			contextSize := 2048
+			gpuLayers := 0
+			var kv uint64
+			overhead := uint64(512 << 20)
+			if e := flags("backend serve", args[2:], func(f *flag.FlagSet) {
+				f.StringVar(&binary, "binary", "", "llama-server path")
+				f.IntVar(&contextSize, "context", contextSize, "slot context")
+				f.IntVar(&gpuLayers, "gpu-layers", 0, "GPU layers")
+				f.Uint64Var(&kv, "kv-bytes-per-token", 0, "architecture-derived KV estimate, required")
+				f.Uint64Var(&overhead, "overhead-bytes", overhead, "runtime and temporary buffers")
+			}); e != nil {
+				return e
+			}
+			if contextSize < 1 || gpuLayers < 0 {
+				return errors.New("context must be positive and GPU layers nonnegative")
+			}
+			entry, e := model.Get(registry, args[1])
+			if e != nil {
+				return e
+			}
+			s, e := resource.Discover(ctx, dir)
+			if e != nil {
+				return e
+			}
+			r := scheduler.Recommend([]scheduler.Worker{{ID: "local", Local: true, Available: true, LastSeen: time.Now(), Resources: s}}, scheduler.Model{WeightBytes: uint64(entry.SizeBytes), KVBytesPerToken: kv, ContextTokens: uint64(contextSize), OverheadBytes: overhead, CPUOverheadBytes: 256 << 20}, scheduler.DefaultPolicy())
+			fits := false
+			for _, candidate := range r.Candidates {
+				if (gpuLayers == 0 && candidate.Device == "cpu") || (gpuLayers > 0 && candidate.Device == "gpu") {
+					fits = true
+				}
+			}
+			if !fits {
+				_ = writeJSON(out, r)
+				return errors.New("memory admission failed; provide architecture-derived --kv-bytes-per-token, reduce context/model size, or use a suitable device; partial offload planning is not implemented")
+			}
+			if binary == "" {
+				binary, e = exec.LookPath("llama-server")
+				if e != nil {
+					return errors.New("llama-server missing; see docs/backend.md or pass --binary")
+				}
+			}
+			binary, e = filepath.Abs(binary)
+			if e != nil {
+				return e
+			}
+			return backend.Run(ctx, backend.LaunchConfig{Binary: binary, RegistryDir: registry, Model: args[1], Endpoint: c.BackendURL, Context: contextSize, GPULayers: gpuLayers, Stdout: out, Stderr: out})
+		}
+		return errors.New("usage: backend list | backend serve NAME --kv-bytes-per-token N [--binary PATH] [--context 2048] [--gpu-layers 0]")
+	case "run":
+		return run(ctx, dir, c, args, in, out)
+	case "network":
+		if len(args) != 2 || args[0] != "probe" {
+			return errors.New("usage: network probe PEER_NAME")
+		}
+		endpoint, e := peer(c, args[1])
+		if e != nil {
+			return e
+		}
+		cl, e := security.Client(dir)
+		if e != nil {
+			return e
+		}
+		defer cl.CloseIdleConnections()
+		q, e := network.Measure(ctx, cl, endpoint)
+		if e != nil {
+			return e
+		}
+		return writeJSON(out, map[string]any{"measurement": q, "recommendation": networkAdvice(q), "rpc_enabled": false})
+	case "simulate":
+		if len(args) != 0 {
+			return errors.New("simulate takes no arguments")
+		}
+		return simulation(out)
+	default:
+		return fmt.Errorf("unknown command %q; run meshcompute help", command)
+	}
+}
+func networkAdvice(q network.Quality) string {
+	if !q.Available || !q.Stable {
+		return "Unstable/unavailable: do not start remote inference; no automatic generation retry."
+	}
+	if q.Latency > 50*time.Millisecond || q.ThroughputBytesPerSecond < 50*1024*1024 {
+		return "Prefer local or one remote worker; avoid partitioned inference over this link."
+	}
+	return "Link passes preliminary thresholds only. RPC remains disabled and unverified."
+}
+func run(ctx context.Context, dir string, c config.Config, args []string, in io.Reader, out io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("usage: run MODEL [--node local|auto|PEER] [--prompt TEXT]")
+	}
+	r := backend.Request{Model: args[0], MaxTokens: 128, Context: 2048}
+	node := "local"
+	if e := flags("run", args[1:], func(f *flag.FlagSet) {
+		f.StringVar(&node, "node", node, "placement")
+		f.StringVar(&r.Prompt, "prompt", "", "prompt (stdin if absent)")
+		f.IntVar(&r.MaxTokens, "max-tokens", 128, "output cap")
+		f.IntVar(&r.Context, "context", 2048, "context budget")
+	}); e != nil {
+		return e
+	}
+	if r.Prompt == "" {
+		b, e := io.ReadAll(io.LimitReader(in, backend.MaxPromptBytes+1))
+		if e != nil {
+			return e
+		}
+		r.Prompt = string(b)
+	}
+	if strings.TrimSpace(r.Prompt) == "" || len(r.Prompt) > backend.MaxPromptBytes || r.MaxTokens < 1 || r.Context < 1 || r.MaxTokens >= r.Context {
+		return errors.New("invalid prompt or token/context limits")
+	}
+	cl, e := security.Client(dir)
+	if e != nil {
+		return e
+	}
+	defer cl.CloseIdleConnections()
+	cl.Timeout = backend.Timeout + 10*time.Second
+	candidates := []string{node}
+	if node == "auto" {
+		candidates = []string{"local"}
+		for _, p := range c.Peers {
+			candidates = append(candidates, p.Name)
+		}
+	}
+	for _, name := range candidates {
+		endpoint, e := peer(c, name)
+		if e != nil {
+			return e
+		}
+		var st agent.Status
+		bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
+		e = request(bounded, cl, endpoint, "/v1/status", nil, &st)
+		cancel()
+		ready := e == nil && !st.Busy && st.BackendReady && st.Backend != nil && len(st.Backend.Models) == 1 && st.Backend.Models[0] == r.Model && st.Backend.Context >= r.Context
+		if !ready {
+			if node == "auto" {
+				continue
+			}
+			return errors.New("selected agent/model is not ready or context exceeds capacity; start agent and matching backend")
+		}
+		advice := "Local execution"
+		if name != "local" {
+			q, e := network.Measure(ctx, cl, endpoint)
+			if e != nil || !q.Available || !q.Stable {
+				if node == "auto" {
+					continue
+				}
+				return errors.New("remote network failed admission; no inference started")
+			}
+			advice = networkAdvice(q)
+		}
+		var result agent.Result
+		if e = request(ctx, cl, endpoint, "/v1/run", r, &result); e != nil {
+			return e
+		}
+		mode := "local"
+		if name != "local" {
+			mode = "single_remote"
+		}
+		result.Mode = mode
+		return writeJSON(out, map[string]any{"result": result, "network_policy": advice})
+	}
+	return errors.New("no healthy node has the requested model and context; no inference started")
+}
+func simulation(out io.Writer) error {
+	now := time.Now()
+	ram := uint64(8 << 30)
+	s := resource.Snapshot{RAMAvailableBytes: &ram, CollectedAt: now}
+	m := scheduler.Model{WeightBytes: 1 << 30, KVBytesPerToken: 65536, ContextTokens: 2048, OverheadBytes: 512 << 20, CPUOverheadBytes: 256 << 20}
+	p := scheduler.DefaultPolicy()
+	p.Now = now
+	q := network.Quality{Available: true, Stable: true, MeasuredAt: now, Latency: 200 * time.Millisecond, ThroughputBytesPerSecond: 1 << 20, Requests: 4}
+	w := scheduler.Worker{ID: "SIMULATED_remote", Available: true, LastSeen: now, Resources: s, Network: &q}
+	slow := scheduler.Recommend([]scheduler.Worker{w}, m, p)
+	w.Available = false
+	failed := scheduler.Recommend([]scheduler.Worker{w}, m, p)
+	return writeJSON(out, map[string]any{"simulation": true, "inference_performed": false, "slow_network": slow, "disconnected_worker": failed})
+}
