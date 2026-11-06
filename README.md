@@ -33,7 +33,7 @@ single-node inference, not tensor splitting.
 ## Requirements
 
 - Go 1.24 or newer to build from source (standard library only; no modules to
-  download).
+  download). The prebuilt Windows installer does **not** require Go.
 - A separately built and compatible `llama-server` for real inference.
 - Linux amd64/arm64 or Windows amd64. macOS and AMD/Intel GPUs are not validated.
 - For multi-machine use: an explicit private VPN address (Tailscale/WireGuard)
@@ -48,17 +48,28 @@ sh installers/install.sh
 # binary: ~/.local/bin/meshcompute
 ```
 
-Windows (non-administrator PowerShell):
+Windows (non-administrator PowerShell, no Go required):
 
 ```powershell
-.\installers\install.ps1
+.\installers\install-prebuilt.ps1 -BinaryPath .\meshcompute-windows-amd64.exe -Sha256 <verified-sha256>
 # binary: %LOCALAPPDATA%\meshcompute\bin\meshcompute.exe
 ```
 
-Both installers build with `GOPROXY=off`, `GOTOOLCHAIN=local`, `CGO_ENABLED=0`,
-stage the binary, and refuse to replace an unrelated or symlinked file. They do
-not install a service, driver, model, firewall rule, or PATH entry. Uninstall
-removes only the binary and preserves configuration/state.
+The prebuilt installer verifies SHA-256, stages the file, runs the one-time
+`install` step, and records the hash in `install.json`; uninstall verifies that
+marker and also needs no Go. See [docs/windows.md](docs/windows.md) for the
+release download, firewall, CUDA, enrollment, and rollback details.
+
+To build on Windows with Go instead:
+
+```powershell
+.\installers\install.ps1
+```
+
+All installers are user-scoped, build or stage the binary, and refuse to replace
+an unrelated or symlinked file. They do not install a service, driver, model,
+firewall rule, or PATH entry. Uninstall removes only the binary and preserves
+configuration/state.
 
 Or build directly:
 
@@ -219,6 +230,7 @@ bits and directory `fsync` are not portable and are substituted accordingly.
 - [Architecture decisions](docs/architecture.md)
 - [Security model](docs/security.md)
 - [llama.cpp backend contract](docs/backend.md)
+- [Windows deployment](docs/windows.md)
 - [Implementation plan](docs/plan.md)
 - [Validation evidence](docs/validation.md)
 

@@ -2,7 +2,9 @@ GO ?= go
 VERSION ?= 0.1.0-dev
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build test race vet fmt-check cross offline verify clean
+.PHONY: build test race vet fmt-check cross offline verify clean dist
+
+DIST ?= dist
 
 build:
 	$(GO) build -trimpath -buildvcs=false -ldflags '$(LDFLAGS)' -o bin/meshcompute ./cmd/meshcompute
@@ -29,6 +31,14 @@ offline:
 	GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOWORK=off $(GO) test ./... -count=1
 
 verify: fmt-check vet test cross offline
+
+dist:
+	rm -rf $(DIST)
+	mkdir -p $(DIST)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -buildvcs=false -ldflags '$(LDFLAGS)' -o $(DIST)/meshcompute-linux-amd64 ./cmd/meshcompute
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -buildvcs=false -ldflags '$(LDFLAGS)' -o $(DIST)/meshcompute-linux-arm64 ./cmd/meshcompute
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -trimpath -buildvcs=false -ldflags '$(LDFLAGS)' -o $(DIST)/meshcompute-windows-amd64.exe ./cmd/meshcompute
+	cd $(DIST) && sha256sum meshcompute-linux-amd64 meshcompute-linux-arm64 meshcompute-windows-amd64.exe > SHA256SUMS
 
 clean:
 	rm -rf bin

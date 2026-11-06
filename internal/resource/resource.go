@@ -68,13 +68,13 @@ func Discover(ctx context.Context, path string) (Snapshot, error) {
 			}
 		}
 	case "windows":
-		b, e := command(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `$ErrorActionPreference='Stop'; $o=Get-CimInstance Win32_OperatingSystem; $c=Get-CimInstance Win32_Processor | Select-Object -First 1; @{CPU=$c.Name; Total=[uint64]$o.TotalVisibleMemorySize*1024; Available=[uint64]$o.FreePhysicalMemory*1024} | ConvertTo-Json -Compress`)
+		b, e := command(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `$ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $ErrorActionPreference='Stop'; $o=Get-CimInstance Win32_OperatingSystem; $c=Get-CimInstance Win32_Processor | Select-Object -First 1; @{CPU=$c.Name; Total=[uint64]$o.TotalVisibleMemorySize*1024; Available=[uint64]$o.FreePhysicalMemory*1024} | ConvertTo-Json -Compress`)
 		var w struct {
 			CPU              string
 			Total, Available *uint64
 		}
 		if e == nil {
-			e = json.Unmarshal(b, &w)
+			e = json.Unmarshal(decodePowerShell(b), &w)
 		}
 		if e != nil {
 			s.Issues = append(s.Issues, "Windows hardware: "+e.Error())

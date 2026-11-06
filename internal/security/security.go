@@ -166,10 +166,19 @@ func template(id string) *x509.Certificate {
 }
 func privateIP(host string) net.IP {
 	ip := net.ParseIP(host)
-	if ip == nil || !(ip.IsPrivate() || ip.IsLoopback()) {
+	if ip == nil {
 		return nil
 	}
-	return ip
+	if ip.IsPrivate() || ip.IsLoopback() {
+		return ip
+	}
+	// Tailscale and some VPNs use the RFC 6598 100.64.0.0/10 range, which
+	// net.IP.IsPrivate does not include. config already admits it, so the
+	// security identity layer must agree.
+	if _, cgnat, _ := net.ParseCIDR("100.64.0.0/10"); cgnat.Contains(ip) {
+		return ip
+	}
+	return nil
 }
 func endpoint(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)

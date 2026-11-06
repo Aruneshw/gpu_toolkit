@@ -105,7 +105,68 @@ jobs:
       - uses: actions/checkout@v4
       - shell: pwsh
         run: |
-          foreach ($file in 'installers/install.ps1', 'installers/uninstall.ps1') {
+          foreach ($file in 'installers/install.ps1', 'installers/install-prebuilt.ps1', 'installers/uninstall.ps1') {
             $null = [ScriptBlock]::Create((Get-Content -Raw $file))
           }
           Write-Output 'PowerShell installer syntax OK'
+
+  installer-windows-prebuilt:
+    name: prebuilt install (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: build prebuilt executable
+        shell: pwsh
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\dist" | Out-Null
+          go build -trimpath -o "$env:RUNNER_TEMP\dist\meshcompute-windows-amd64.exe" ./cmd/meshcompute
+          (Get-FileHash -LiteralPath "$env:RUNNER_TEMP\dist\meshcompute-windows-amd64.exe" -Algorithm SHA256).Hash
+
+      - name: install, verify, tamper refusal, uninstall without Go
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = "$env:RUNNER_TEMP\dist\meshcompute-windows-amd64.exe"
+          $binDir = Join-Path $env:LOCALAPPDATA 'meshcompute\bin'
+          $binary = Join-Path $binDir 'meshcompute.exe'
+          $marker = Join-Path $binDir 'install.json'
+
+          $goPath = (Get-Command go -ErrorAction Stop).Source
+          $goDirs = @((Split-Path $goPath -Parent), "$env:GOROOT\bin") | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+          $env:PATH = (($env:PATH -split ';') | Where-Object {
+            $entry = $_.TrimEnd('\')
+            ($goDirs | Where-Object { $_.TrimEnd('\') -eq $entry }).Count -eq 0
+          }) -join ';'
+          if (Get-Command go -ErrorAction SilentlyContinue) { Write-Warning 'A second Go installation is still on PATH; the marker path is asserted below.' }
+
+          & .\installers\install-prebuilt.ps1 -BinaryPath $exe
+          & $binary version
+          if ($LASTEXITCODE -ne 0) { throw 'Installed binary failed to run.' }
+          if (-not (Test-Path -LiteralPath $marker)) { throw 'install.json was not written.' }
+          $info = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
+          $expected = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash
+          if ($info.sha256 -ne $expected) { throw 'install.json checksum does not match the binary.' }
+
+          Add-Content -LiteralPath $binary -Value 'tamper' -NoNewline
+          $refused = $false
+          try { & .\installers\uninstall.ps1 } catch { $refused = $true }
+          if (-not $refused) { throw 'Uninstaller removed a modified binary without -Force.' }
+          if (-not (Test-Path -LiteralPath $binary)) { throw 'Refused uninstall deleted the binary.' }
+
+          & .\installers\uninstall.ps1 -Force
+          if (Test-Path -LiteralPath $binary) { throw 'Uninstaller left the binary behind.' }
+          if (Test-Path -LiteralPath $marker) { throw 'Uninstaller left install.json behind.' }
+
+          & .\installers\install-prebuilt.ps1 -BinaryPath $exe
+          & $binary version
+          $clean = (& .\installers\uninstall.ps1) -join "`n"
+          if ($clean -notmatch 'verified by install\.json') { throw "Uninstaller did not use install.json: $clean" }
+          if (Test-Path -LiteralPath $binary) { throw 'Clean uninstall left the binary behind.' }
+          if (Test-Path -LiteralPath $marker) { throw 'Clean uninstall left install.json behind.' }
+          Write-Output 'Prebuilt install/uninstall OK without Go'

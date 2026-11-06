@@ -24,6 +24,19 @@ import (
 	"time"
 )
 
+func TestPrivateIP(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "::1", "10.1.2.3", "192.168.1.2", "fd00::1", "100.64.0.1", "100.127.255.254"} {
+		if privateIP(host) == nil {
+			t.Errorf("rejected private address %s", host)
+		}
+	}
+	for _, host := range []string{"8.8.8.8", "100.63.255.255", "100.128.0.1", "2001:4860:4860::8888", "example.com", ""} {
+		if privateIP(host) != nil {
+			t.Errorf("accepted non-private address %s", host)
+		}
+	}
+}
+
 func coordinator(t *testing.T) (string, *httptest.Server) {
 	t.Helper()
 	d := filepath.Join(t.TempDir(), "identity")
