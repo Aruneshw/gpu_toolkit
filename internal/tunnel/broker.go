@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sort"
 	"sync"
 )
 
@@ -14,7 +15,7 @@ var (
 
 // Broker holds at most one connection per authenticated worker. The caller
 // MUST authenticate the connection and check revocation before Register; the
-// broker is not an authentication boundary. It is not yet wired into the app.
+// broker is not an authentication boundary. The agent uses RegisterTLS.
 // Connections are consumed once; workers must reconnect for another request.
 type Broker struct {
 	mu       sync.Mutex
@@ -22,6 +23,31 @@ type Broker struct {
 	closed   bool
 	sessions map[string]*session
 	changed  chan struct{}
+}
+
+// Workers returns a bounded snapshot, including currently leased workers.
+func (b *Broker) Workers() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ids := make([]string, 0, len(b.sessions))
+	for id := range b.sessions {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func (b *Broker) Leased(id string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.sessions[id]
+	return s != nil && s.leased
+}
+
+func (b *Broker) idle(s *session) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return !s.leased
 }
 
 type session struct {

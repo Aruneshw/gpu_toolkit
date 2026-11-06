@@ -39,6 +39,7 @@ dist:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -buildvcs=false -ldflags '$(LDFLAGS)' -o $(DIST)/meshcompute-linux-arm64 ./cmd/meshcompute
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -trimpath -buildvcs=false -ldflags '$(LDFLAGS)' -o $(DIST)/meshcompute-windows-amd64.exe ./cmd/meshcompute
 	cd $(DIST) && sha256sum meshcompute-linux-amd64 meshcompute-linux-arm64 meshcompute-windows-amd64.exe > SHA256SUMS
+	python3 installers/package.py $(DIST)
 
 clean:
 	rm -rf bin

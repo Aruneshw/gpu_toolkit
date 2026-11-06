@@ -17,6 +17,7 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"meshcompute/internal/config"
 	"net"
 	"net/http"
 	"net/url"
@@ -36,11 +37,15 @@ type state struct {
 	Pin                  string
 	Tokens               map[string]time.Time
 	Revoked              map[string]bool
+	Public               bool
+	Reverse              bool
+	HostEndpoint         string
 }
 type invitation struct {
-	Endpoint   string
-	CA         []byte
-	Pin, Token string
+	Endpoint        string
+	CA              []byte
+	Pin, Token      string
+	Public, Reverse bool
 }
 type enrollment struct {
 	Token string
@@ -195,9 +200,30 @@ func endpoint(raw string) (*url.URL, error) {
 
 // Init creates a coordinator and its retained CA; host is a private or loopback IP.
 func Init(dir, host string) error {
+	return initIdentity(dir, host, "", false, false)
+}
+
+// InitGroup creates a creator-hosted relay identity. Public IPs are opt-in;
+// the loopback-only model backend and dashboard policies are unaffected.
+func InitGroup(dir, listen, advertise string, public bool) error {
+	if err := config.RemoteEndpoint("https://"+listen, public); err != nil {
+		return err
+	}
+	if err := config.RemoteEndpoint(advertise, public); err != nil {
+		return err
+	}
+	host, _, _ := net.SplitHostPort(listen)
+	u, _ := url.Parse(advertise)
+	return initIdentity(dir, host, u.Hostname(), public, true)
+}
+
+func initIdentity(dir, host, advertised string, public, reverse bool) error {
 	ip := privateIP(host)
+	if public {
+		ip = net.ParseIP(host)
+	}
 	if ip == nil {
-		return errors.New("host must be a private or loopback IP")
+		return errors.New("host must be a permitted literal IP")
 	}
 	unlock, err := lock(dir)
 	if err != nil {
@@ -231,20 +257,19 @@ func Init(dir, host string) error {
 	id := "coordinator-" + opaque()
 	leaf := template(id)
 	leaf.IPAddresses = []net.IP{ip}
+	if advertised != "" && advertised != host {
+		leaf.IPAddresses = append(leaf.IPAddresses, net.ParseIP(advertised))
+	}
 	leaf.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
 	der, err := x509.CreateCertificate(rand.Reader, leaf, ca, nodePub, key)
 	if err != nil {
 		return fail()
 	}
-	return save(dir, state{ID: id, Coordinator: true, CA: certPEM(caDER), CAKey: keyPEM(key), Cert: certPEM(der), Key: keyPEM(nodeKey), Pin: digest(der), Tokens: map[string]time.Time{}, Revoked: map[string]bool{}})
+	return save(dir, state{ID: id, Coordinator: true, CA: certPEM(caDER), CAKey: keyPEM(key), Cert: certPEM(der), Key: keyPEM(nodeKey), Pin: digest(der), Tokens: map[string]time.Time{}, Revoked: map[string]bool{}, Public: public, Reverse: reverse})
 }
 
 // Pair issues a single-use invitation through local coordinator state only.
 func Pair(dir, raw string, ttl time.Duration) (string, error) {
-	u, err := endpoint(raw)
-	if err != nil {
-		return "", err
-	}
 	if ttl <= 0 || ttl > 24*time.Hour {
 		return "", errors.New("token lifetime must be positive and at most 24 hours")
 	}
@@ -257,6 +282,10 @@ func Pair(dir, raw string, ttl time.Duration) (string, error) {
 	if err != nil || !s.Coordinator {
 		return "", fail()
 	}
+	if err := config.RemoteEndpoint(raw, s.Public); err != nil {
+		return "", err
+	}
+	u, _ := url.Parse(raw)
 	c, err := parseCert(s.Cert)
 	if err != nil || c.VerifyHostname(u.Hostname()) != nil {
 		return "", fail()
@@ -274,14 +303,18 @@ func Pair(dir, raw string, ttl time.Duration) (string, error) {
 	if err = save(dir, s); err != nil {
 		return "", err
 	}
-	b, _ := json.Marshal(invitation{Endpoint: raw, CA: s.CA, Pin: s.Pin, Token: token})
+	b, _ := json.Marshal(invitation{Endpoint: raw, CA: s.CA, Pin: s.Pin, Token: token, Public: s.Public, Reverse: s.Reverse})
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-type restrictedTransport struct{ *http.Transport }
+type restrictedTransport struct {
+	*http.Transport
+	public bool
+}
 
 func (t restrictedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if r.URL.Scheme != "https" || privateIP(r.URL.Hostname()) == nil || r.URL.User != nil {
+	ip := net.ParseIP(r.URL.Hostname())
+	if r.URL.Scheme != "https" || ip == nil || (privateIP(r.URL.Hostname()) == nil && !(t.public && ip.IsGlobalUnicast())) || r.URL.User != nil {
 		return nil, errors.New("only HTTPS private or loopback IP requests are permitted")
 	}
 	return t.Transport.RoundTrip(r)
@@ -300,7 +333,7 @@ func transport(ca []byte, pin string, cert *tls.Certificate) (*http.Client, erro
 	if cert != nil {
 		cfg.Certificates = []tls.Certificate{*cert}
 	}
-	return &http.Client{Timeout: 30 * time.Second, Transport: restrictedTransport{&http.Transport{TLSClientConfig: cfg, Proxy: nil}}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirects forbidden") }}, nil
+	return &http.Client{Timeout: 30 * time.Second, Transport: restrictedTransport{Transport: &http.Transport{TLSClientConfig: cfg, Proxy: nil}}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirects forbidden") }}, nil
 }
 
 // Join enrolls with the exact coordinator pinned in an out-of-band invitation.
@@ -325,10 +358,11 @@ func join(ctx context.Context, dir, code, host string) error {
 	if err != nil || json.Unmarshal(b, &inv) != nil || len(inv.Token) != 64 {
 		return fail()
 	}
-	u, err := endpoint(inv.Endpoint)
+	err = config.RemoteEndpoint(inv.Endpoint, inv.Public && inv.Reverse)
 	if err != nil {
 		return err
 	}
+	u, _ := url.Parse(inv.Endpoint)
 	unlock, err := lock(dir)
 	if err != nil {
 		return err
@@ -342,6 +376,9 @@ func join(ctx context.Context, dir, code, host string) error {
 		return err
 	}
 	defer client.CloseIdleConnections()
+	tr := client.Transport.(restrictedTransport)
+	tr.public = inv.Public && inv.Reverse
+	client.Transport = tr
 	_, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return fail()
@@ -386,7 +423,7 @@ func join(ctx context.Context, dir, code, host string) error {
 	if host != "" && c.VerifyHostname(host) != nil {
 		return fail()
 	}
-	return save(dir, state{ID: cred.ID, CA: inv.CA, Cert: cred.Cert, Key: keyPEM(key), Pin: inv.Pin})
+	return save(dir, state{ID: cred.ID, CA: inv.CA, Cert: cred.Cert, Key: keyPEM(key), Pin: inv.Pin, Public: inv.Public && inv.Reverse, Reverse: inv.Reverse, HostEndpoint: inv.Endpoint})
 }
 
 // ServerTLS permits unauthenticated enrollment; wrap every other route in Authorize.
@@ -441,6 +478,9 @@ func Client(dir string) (*http.Client, error) {
 		return nil, err
 	}
 	t := c.Transport.(restrictedTransport).Transport
+	rt := c.Transport.(restrictedTransport)
+	rt.public = s.Public
+	c.Transport = rt
 	// A fresh handshake prevents pooled connections from bypassing revocation.
 	t.DisableKeepAlives = true
 	if s.Coordinator {

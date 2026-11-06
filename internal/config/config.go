@@ -25,6 +25,8 @@ type Config struct {
 	Advertise  string `json:"advertise"`
 	BackendURL string `json:"backend_url"`
 	Peers      []Peer `json:"peers"`
+	GroupHost  bool   `json:"group_host,omitempty"`
+	Public     bool   `json:"public,omitempty"`
 }
 
 func Default() Config {
@@ -46,6 +48,15 @@ func privateIP(s string) bool {
 }
 func inCGNAT(ip net.IP) bool { _, n, _ := net.ParseCIDR("100.64.0.0/10"); return n.Contains(ip) }
 func Endpoint(raw string, backend bool) error {
+	return endpoint(raw, backend, false)
+}
+
+// RemoteEndpoint allows explicit public IPs only for opt-in group hosting.
+func RemoteEndpoint(raw string, public bool) error {
+	return endpoint(raw, false, public)
+}
+
+func endpoint(raw string, backend, public bool) error {
 	u, e := url.Parse(raw)
 	if e != nil {
 		return errors.New("invalid endpoint")
@@ -54,7 +65,7 @@ func Endpoint(raw string, backend bool) error {
 	if backend {
 		scheme = "http"
 	}
-	if u.Scheme != scheme || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+	if u.Scheme != scheme || u.Opaque != "" || u.User != nil || u.ForceQuery || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" || (u.Path != "" && u.Path != "/") {
 		return fmt.Errorf("endpoint must be %s://IP:port without credentials or path", scheme)
 	}
 	host, port, e := net.SplitHostPort(u.Host)
@@ -65,7 +76,8 @@ func Endpoint(raw string, backend bool) error {
 	if e != nil || n < 1 || n > 65535 {
 		return errors.New("invalid port")
 	}
-	if !privateIP(host) {
+	ip := net.ParseIP(host)
+	if ip == nil || (!privateIP(host) && !(public && ip.IsGlobalUnicast())) {
 		return errors.New("endpoint must use a private, VPN or loopback IP")
 	}
 	if backend && !net.ParseIP(host).IsLoopback() {
@@ -77,14 +89,17 @@ func (c Config) Validate() error {
 	if c.Version != Version {
 		return errors.New("unsupported configuration version")
 	}
-	if e := Endpoint("https://"+c.Listen, false); e != nil {
+	if c.Public && !c.GroupHost {
+		return errors.New("public listening requires group_host")
+	}
+	if e := RemoteEndpoint("https://"+c.Listen, c.Public); e != nil {
 		return fmt.Errorf("listen: %w", e)
 	}
-	if e := Endpoint(c.Advertise, false); e != nil {
+	if e := RemoteEndpoint(c.Advertise, c.Public); e != nil {
 		return fmt.Errorf("advertise: %w", e)
 	}
 	u, _ := url.Parse(c.Advertise)
-	if u.Host != c.Listen {
+	if !c.GroupHost && u.Host != c.Listen {
 		return errors.New("advertise must match listen address (use an explicit VPN IP)")
 	}
 	if e := Endpoint(c.BackendURL, true); e != nil {
@@ -92,7 +107,7 @@ func (c Config) Validate() error {
 	}
 	seen := map[string]bool{}
 	for _, p := range c.Peers {
-		if p.Name == "" || seen[p.Name] {
+		if p.Name == "" || p.Name == "local" || seen[p.Name] {
 			return errors.New("peer names must be nonempty and unique")
 		}
 		seen[p.Name] = true
@@ -102,6 +117,10 @@ func (c Config) Validate() error {
 	}
 	return nil
 }
+
+// LocalEndpoint is reachable without hairpin NAT when advertise uses a
+// forwarded address. Group certificates contain both listen and advertise IPs.
+func (c Config) LocalEndpoint() string { return "https://" + c.Listen }
 func Load(dir string) (Config, error) {
 	var c Config
 	f, e := os.Open(filepath.Join(dir, "config.json"))

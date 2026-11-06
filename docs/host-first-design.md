@@ -1,68 +1,123 @@
-# Host-first remote networking: proposed design
+# Creator-hosted groups
 
-This document is a design, not a description of implemented functionality.
-The existing MeshCompute release still requires directly reachable private
-addresses for both coordinator and worker. The `internal/tunnel` package
-contains framing primitives only and is not connected to the agent.
+Each group creator runs that group's host/relay inside MeshCompute. Other
+creators run independent groups with their own CA, invitations, and workers.
+There is no shared MeshCompute server, central relay, or VPN dependency.
 
-## Intended user flow
+## Quick start
 
-1. A host explicitly enables remote hosting, chooses an address and starts the
-   agent. The host must be reachable by each worker over IPv6 or an explicitly
-   forwarded port. A connection test can detect failure; it cannot guarantee
-   that all future clients can reach the host.
-2. The host generates an expiring, single-use invitation containing its exact
-   endpoint and pinned cluster identity. The user transfers it through an
-   authenticated confidential channel.
-3. A worker joins using the invitation, generates its private key locally and
-   receives an enrolled identity. It then maintains an outbound connection to
-   the host. The worker need not expose an inbound listener to the internet.
-4. The host lists connected worker identities and sends status and inference
-   requests to one selected worker over that connection. Disconnection is
-   visible and in-flight inference fails without silent retry.
-5. The host can revoke a worker locally. Revocation must terminate its active
-   connection and reject subsequent connections and requests.
+Download a package from [Releases](https://github.com/Aruneshw/gpu_toolkit/releases).
+The Windows ZIP includes the executable; the Linux tarball contains `meshcompute`.
 
-Each host retains its own CA and is a separate trust domain. There is no
-shared service or automatic discovery of other people's clusters. A host being
-offline makes its group unavailable. An IPv6 address, NAT mapping, firewall
-policy, or routing change may break reachability; automatic recovery cannot
-make unreachable networks reachable.
+**Creator, Linux:** extract the tarball and run (replace the example address):
 
-## Transport requirements
+```sh
+./meshcompute --home "$HOME/.config/meshcompute-group" host \
+  --listen '[YOUR_PUBLIC_IPV6]:7443' --public
+```
 
-- Require TLS 1.3 and validate both certificate chain and exact host pin; the
-  worker must authenticate using its enrolled identity. Enrollment must retain
-  single-use invitation, expiration, and certificate verification guarantees.
-- Do not weaken the existing private-IP checks globally. Public listening and
-  dialing must be explicit opt-ins with separately validated literal addresses.
-  The dashboard and inference backend stay loopback-only.
-- Authenticate before accepting tunnel frames. Enforce per-host limits on
-  connection count, enrollment attempts, concurrent streams, frame size, total
-  buffered bytes, idle time, and connection establishment time. The framing
-  helper by itself does not provide any of these connection-level protections.
-- Specify stream open, data, end, reset, ping and shutdown messages, stream ID
-  allocation, flow control, and maximum request and response sizes before
-  wiring up the existing status and streaming APIs. Reject malformed frames and
-  duplicate or unexpected stream IDs. Slow peers must not cause unbounded
-  memory growth or block unrelated streams.
-- Bind each connection and request to the authenticated worker identity, not a
-  worker-supplied name. Prevent cross-group routing and worker-to-worker access.
-  On replacement or reconnect, prevent an older connection from removing or
-  impersonating the new one. Limit reconnect frequency and add jitter.
-- Keep prompt bodies and invitation codes out of logs. Cancellation, disconnect,
-  revocation, and process shutdown must release streams and backend slots.
-- Protect enrollment and tunnel handshakes from unauthenticated resource
-  exhaustion. Public exposure also requires operational firewall policy,
-  security review and abuse controls; mTLS does not eliminate denial of service.
+**Creator, Windows:** extract the ZIP, run `.\install.cmd`, then in a new terminal:
 
-## Required validation before claiming remote support
+```powershell
+meshcompute --home "$env:APPDATA\meshcompute-group" host --listen "[YOUR_PUBLIC_IPV6]:7443" --public
+```
 
-Test real coordinator/worker enrollment, status and SSE inference across the
-reverse transport on Linux and Windows, including simultaneous independent
-groups. Cover invalid invitations, expiration, replay, foreign identities,
-revocation during a live connection, malformed frames, backpressure, bounded
-memory, disconnect and reconnect, duplicate connections, cancellation, and
-shutdown. Run physical two-machine tests on different networks and verify
-firewall and IPv6 behavior. A loopback test or Wine is not evidence that an
-arbitrary internet connection works.
+For an IPv4 port forward, bind the exact local interface IP and advertise the
+forwarded public IP and port:
+
+```sh
+./meshcompute --home ./group host --listen 192.168.1.20:7443 \
+  --advertise https://YOUR_PUBLIC_IPV4:7443 --public
+```
+
+The host prints a private single-use invitation (five-minute expiry) and the
+localhost dashboard URL. Send the invitation privately to one friend. For
+additional friends, run `meshcompute --home SAME_DIRECTORY pair --ttl 5m` in
+another terminal. The creator must stay online with `host` running.
+
+**Friend, Windows:** extract either the release ZIP or GitHub source ZIP and run:
+
+```powershell
+.\join.cmd
+```
+
+This installs the bundled executable (or downloads the official release when
+using the source ZIP), verifies its checksum, and prompts for the invitation.
+Paste it and press Enter. No Git, Go, permanent execution-policy change, or
+separate networking tool is required. The worker stays in the foreground.
+Use the same command again to reconnect an already-enrolled worker.
+
+**Friend, Linux:** extract the tarball and run:
+
+```sh
+./meshcompute join
+```
+
+After enrollment, `meshcompute start` also resumes the worker. Use separate
+`--home` directories for different groups or for an existing legacy cluster.
+Existing identities are never overwritten by `host` or `join`.
+
+Workers appear automatically in the creator's dashboard under their certificate
+IDs (`worker-...`), without `peer add` or knowing a worker's IP address. The
+creator can use that ID with `run --node`, `network probe`, and `revoke`.
+
+## What inference needs
+
+Telemetry works without a language model. To run inference, register a local
+GGUF and start a compatible llama.cpp backend **on the worker** using
+[backend.md](backend.md) / [windows.md](windows.md). Then select that worker
+and its model in the dashboard. Models and GPU drivers are hardware-specific
+and are not silently downloaded. Each request runs on one computer; memory
+is not pooled across computers.
+
+## Connectivity
+
+The creator must have a reachable IP and TCP port. Public IPv6 requires IPv6 on
+both ends and a suitable inbound firewall rule on the creator's network. IPv4
+requires a public address plus a port forward when behind a router. Carrier
+NAT, blocked IPv6, sleeping hosts, and changing IPs can prevent connection.
+An invitation establishes trust, not an internet route. MeshCompute does not
+claim to bypass these restrictions or automatically change router/firewall rules.
+For two processes on one machine, use loopback and omit `--public`.
+
+`listen` and `advertise` addresses are certified. To change them, create a new
+group in another `--home` and re-enroll workers. Reserve the address where possible.
+
+## Implemented architecture
+
+1. HTTPS enrollment retains single-use invitations, expiration, local worker key
+   generation, CA-chain verification, and the exact creator certificate pin.
+2. A worker opens outbound TLS 1.3 to the creator's same HTTPS port, authenticates
+   with its enrolled certificate, and requests `Upgrade: meshcompute/1`.
+3. The creator validates group membership and revocation, then registers the
+   connection in its bounded broker. The host sends one reverse HTTP operation
+   over each connection; the worker replenishes it automatically. This avoids
+   multiplexing complexity and never retries a dispatched inference request.
+4. Only the creator's own certificate can use `/v1/workers` and its proxy routes.
+   The CLI/dashboard talk to these through local mTLS. Workers cannot route to
+   one another, enroll other workers, or use the proxy as an arbitrary HTTP relay.
+5. Only status, ping/probe, and inference operations are forwarded. Headers,
+   request bodies, response sizes, connection counts (128), group workers (64),
+   and timeouts are bounded. TCP provides streaming backpressure. The old frame
+   primitives remain tested but are not used by this HTTP transport.
+6. A worker's status is cached during an active request with `busy=true`, so the
+   single inference connection is not stolen by telemetry. Disconnected known
+   workers remain visible as unhealthy until host restart; reconnect repopulates
+   discovery after a restart. Resource timestamps indicate measurement age.
+7. Failed connections retry with bounded delay and jitter. Idle tunnels renew
+   after 30 seconds. Every dispatch rechecks authorization; active sessions
+   recheck about once per second and close on revocation or invalid state.
+8. Cancellation closes the leased connection and cancels backend generation.
+   Shutdown closes listeners, active requests, and the broker. Logs omit keys
+   and prompts. Invitations are printed only when explicitly requested.
+
+The localhost token-protected dashboard and backend stay loopback-only. Public
+IP support is opt-in for group hosting; legacy private-network defaults remain.
+
+## Validation boundary
+
+End-to-end tests exercise enrollment, outbound TLS, automatic discovery,
+dashboard status, SSE and JSON dispatch, reconnection, access isolation, live
+revocation, and shutdown with a fixture backend. See `docs/validation.md` for
+executed results. Physical Windows CUDA and a two-location internet test require
+real target hardware/networks and are not established by CI or Wine.

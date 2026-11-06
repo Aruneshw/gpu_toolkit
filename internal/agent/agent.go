@@ -4,6 +4,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,8 @@ import (
 	"meshcompute/internal/resource"
 	"meshcompute/internal/security"
 	"meshcompute/internal/sse"
+	"meshcompute/internal/tunnel"
+	"net"
 	"net/http"
 	"path/filepath"
 	"sync"
@@ -48,10 +51,19 @@ type Agent struct {
 	model, last string
 	rate        float64
 	log         *log.Logger
+	broker      *tunnel.Broker
+	known       map[string]*x509.Certificate
+	workerCache map[string]Status
 }
 
 func New(dir string, c config.Config, audit io.Writer) *Agent {
-	return &Agent{dir: dir, c: c, log: log.New(audit, "", log.LstdFlags|log.LUTC)}
+	a := &Agent{dir: dir, c: c, log: log.New(audit, "", log.LstdFlags|log.LUTC)}
+	if c.GroupHost {
+		a.broker, _ = tunnel.NewBroker(64)
+		a.known = make(map[string]*x509.Certificate)
+		a.workerCache = make(map[string]Status)
+	}
+	return a
 }
 
 // begin claims the single inference slot. The caller must call end exactly
@@ -282,10 +294,28 @@ func (a *Agent) Handler() http.Handler {
 	})
 	root := http.NewServeMux()
 	root.Handle("/enroll", security.EnrollHandler(a.dir))
+	if a.broker != nil {
+		root.Handle("/v1/tunnel", security.Authorize(a.dir, http.HandlerFunc(a.connectWorker)))
+		root.Handle("/v1/workers", security.SelfOnly(a.dir, http.HandlerFunc(a.listWorkers)))
+		root.Handle("/v1/workers/", security.SelfOnly(a.dir, http.HandlerFunc(a.proxyWorker)))
+	}
 	root.Handle("/", security.Authorize(a.dir, api))
 	return root
 }
 func (a *Agent) Serve(ctx context.Context) error {
+	listener, err := net.Listen("tcp", a.c.Listen)
+	if err != nil {
+		return err
+	}
+	return a.ServeListener(ctx, listener)
+}
+
+// ServeListener owns listener and shuts down HTTP and reverse connections on
+// cancellation. It also allows end-to-end tests to allocate ports atomically.
+func (a *Agent) ServeListener(ctx context.Context, listener net.Listener) error {
+	defer listener.Close()
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
 	if e := a.c.Validate(); e != nil {
 		return e
 	}
@@ -293,20 +323,35 @@ func (a *Agent) Serve(ctx context.Context) error {
 	if e != nil {
 		return fmt.Errorf("identity unavailable; cluster create or join first: %w", e)
 	}
+	host, reverse, endpoint, e := security.Group(a.dir)
+	if e != nil {
+		return e
+	}
+	if a.c.GroupHost != (host && reverse) {
+		return errors.New("group host config does not match identity; use host to create a group")
+	}
+	var workers sync.WaitGroup
+	if reverse && !host {
+		workers.Add(1)
+		go func() { defer workers.Done(); a.connectLoop(ctx, endpoint) }()
+	}
+	defer func() { stop(); workers.Wait() }()
+	if a.broker != nil {
+		defer a.broker.Close()
+		listener = tunnel.LimitListener(listener, 128)
+	}
 	server := &http.Server{Addr: a.c.Listen, Handler: a.Handler(), TLSConfig: tlsConfig, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: backend.Timeout + 10*time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384, ErrorLog: log.New(io.Discard, "", 0)}
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
 		select {
 		case <-ctx.Done():
-			shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = server.Shutdown(shutdown)
+			_ = server.Close()
 		case <-done:
 		}
 	}()
 	a.log.Print("event=agent_start transport=mutual_tls")
-	e = server.ListenAndServeTLS("", "")
+	e = server.ServeTLS(listener, "", "")
 	if errors.Is(e, http.ErrServerClosed) {
 		return nil
 	}

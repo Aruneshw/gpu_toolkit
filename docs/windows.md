@@ -1,5 +1,26 @@
 # Windows deployment
 
+## Recommended: one command after extracting
+
+Download and extract the Windows ZIP from
+[Releases](https://github.com/Aruneshw/gpu_toolkit/releases), then open regular
+PowerShell in that folder and run:
+
+```powershell
+.\join.cmd
+```
+
+Paste the group creator's invitation and press Enter. Keep the terminal open.
+The command installs a checksum-verified bundled binary and starts the worker;
+it also resumes existing workers. Git, Go and a permanent execution-policy
+change are unnecessary. The GitHub **source ZIP** contains the same command
+and downloads the published binary automatically. `.\install.cmd` installs
+without joining. Open a new terminal for the `meshcompute` PATH command.
+
+See [Creator-hosted groups](host-first-design.md) for the creator's `host`
+command, address selection and network requirements. The sections below cover
+manual installation and legacy direct-peer setup.
+
 This guide covers Windows 11 x64 as a MeshCompute coordinator or worker. The
 prebuilt path needs neither Go nor administrator rights for installation. The
 toolkit still does not pool VRAM: a request runs on one node's local
@@ -198,7 +219,7 @@ meshcompute network probe worker1
 ```
 
 Hardware discovery uses Windows PowerShell CIM (`Win32_OperatingSystem`,
-`Win32_Processor`, disk `PSDrive`, and GPU providers). Redirected output is
+`Win32_Processor`, and disk `PSDrive`); NVIDIA GPU metrics use `nvidia-smi`. Redirected output is
 normalized for UTF-8, UTF-16 LE/BE, and BOM variants. If WMI/PowerShell is
 disabled or policy-blocked, fields remain `null` and an issue is reported; the
 tool does not fabricate RAM, GPU, or disk values.

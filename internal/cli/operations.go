@@ -61,7 +61,7 @@ func request(ctx context.Context, cl *http.Client, endpoint, path string, body a
 }
 func peer(c config.Config, name string) (string, error) {
 	if name == "local" {
-		return c.Advertise, nil
+		return c.LocalEndpoint(), nil
 	}
 	for _, p := range c.Peers {
 		if p.Name == name {
@@ -231,7 +231,7 @@ func operational(ctx context.Context, dir string, c config.Config, command strin
 		if len(args) != 2 || args[0] != "probe" {
 			return errors.New("usage: network probe PEER_NAME")
 		}
-		endpoint, e := peer(c, args[1])
+		endpoint, e := dashboard.NewRemote(dir, c).Endpoint(ctx, args[1])
 		if e != nil {
 			return e
 		}
@@ -296,12 +296,16 @@ func run(ctx context.Context, dir string, c config.Config, args []string, in io.
 	candidates := []string{node}
 	if node == "auto" {
 		candidates = []string{"local"}
-		for _, p := range c.Peers {
+		peers, err := dashboard.NewRemote(dir, c).Peers(ctx)
+		if err != nil {
+			return err
+		}
+		for _, p := range peers {
 			candidates = append(candidates, p.Name)
 		}
 	}
 	for _, name := range candidates {
-		endpoint, e := peer(c, name)
+		endpoint, e := dashboard.NewRemote(dir, c).Endpoint(ctx, name)
 		if e != nil {
 			return e
 		}

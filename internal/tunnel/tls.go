@@ -21,8 +21,8 @@ import (
 // authorization callback is also rechecked approximately once per second;
 // a rejection or changed identity disconnects that session. The callback must
 // be safe for concurrent calls and must return promptly. This polling is not an
-// atomic revocation guarantee. This primitive is not yet connected to the agent
-// or dashboard.
+// atomic revocation guarantee. Unused connections expire after 30 seconds;
+// workers renew them. Active requests have a deadline set by RoundTrip.
 func (b *Broker) RegisterTLS(ctx context.Context, conn *tls.Conn, authorize func(*x509.Certificate) (string, error)) (string, error) {
 	if conn == nil {
 		return "", errors.New("TLS connection required")
@@ -58,6 +58,7 @@ func (b *Broker) RegisterTLS(ctx context.Context, conn *tls.Conn, authorize func
 	}
 	registered = true
 	go func() {
+		idleUntil := time.Now().Add(30 * time.Second)
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
@@ -65,6 +66,10 @@ func (b *Broker) RegisterTLS(ctx context.Context, conn *tls.Conn, authorize func
 			case <-s.done:
 				return
 			case <-ticker.C:
+				if time.Now().After(idleUntil) && b.idle(s) {
+					b.disconnectSession(id, s)
+					return
+				}
 				current, err := authorize(state.PeerCertificates[0])
 				if err != nil || current != id {
 					b.disconnectSession(id, s)

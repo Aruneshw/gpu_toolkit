@@ -170,3 +170,22 @@ jobs:
           if (Test-Path -LiteralPath $binary) { throw 'Clean uninstall left the binary behind.' }
           if (Test-Path -LiteralPath $marker) { throw 'Clean uninstall left install.json behind.' }
           Write-Output 'Prebuilt install/uninstall OK without Go'
+      - name: bundled install with Windows PowerShell restricted policy
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PATH = (($env:PATH -split ';') | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'go.exe')) }) -join ';'
+          if (Get-Command go -ErrorAction SilentlyContinue) { throw 'Go still available.' }
+          Copy-Item "$env:RUNNER_TEMP\dist\meshcompute-windows-amd64.exe" .
+          $hash = (Get-FileHash .\meshcompute-windows-amd64.exe -Algorithm SHA256).Hash
+          "$hash  meshcompute-windows-amd64.exe" | Set-Content -Encoding ascii SHA256SUMS
+          & powershell.exe -NoProfile -ExecutionPolicy Restricted -Command '& .\install.cmd -AllowElevated'
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled installation failed under Restricted policy.' }
+          $binary = Join-Path $env:LOCALAPPDATA 'meshcompute\bin\meshcompute.exe'
+          & $binary version
+          if ($LASTEXITCODE -ne 0) { throw 'Installed binary failed.' }
+          # Reinstall is idempotent and does not accumulate unnecessary backups.
+          & powershell.exe -NoProfile -ExecutionPolicy Restricted -Command '& .\install.cmd -AllowElevated'
+          if ($LASTEXITCODE -ne 0) { throw 'Idempotent installation failed.' }
+          & .\installers\uninstall.ps1 -AllowElevated
+          if (Test-Path -LiteralPath $binary) { throw 'Uninstall failed.' }

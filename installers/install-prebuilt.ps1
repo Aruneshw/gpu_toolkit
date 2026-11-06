@@ -29,6 +29,8 @@ $stage = $null
 $backedUp = $false
 $committed = $false
 $source = $null
+$markerStage = $null
+$placed = $false
 
 $null = [IO.Directory]::CreateDirectory($binDir)
 $lockStream = [IO.File]::Open($lock, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
@@ -64,8 +66,24 @@ try {
     }
 
     $existing = Get-Item -LiteralPath $binary -Force -ErrorAction SilentlyContinue
+    $markerItem = Get-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    if ($null -ne $markerItem -and ($markerItem.PSIsContainer -or ($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint))) { throw "Refusing non-regular file: $marker" }
     if ($null -ne $existing) {
         if ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Refusing non-regular file: $binary" }
+        $existingHash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash
+        if ($null -ne $markerItem) {
+            $oldInfo = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
+            if ($oldInfo.sha256 -ne $existingHash) { throw 'Installed executable differs from install.json; inspect it before upgrading.' }
+        } else {
+            $null = Get-Command go -ErrorAction Stop
+            $oldToolchain = $env:GOTOOLCHAIN
+            try {
+                $env:GOTOOLCHAIN = 'local'
+                $buildInfo = & go version -m $binary
+                if ($LASTEXITCODE -ne 0 -or -not ($buildInfo -match '^\s+path\s+meshcompute/cmd/meshcompute$')) { throw 'Refusing to replace an unrelated executable.' }
+            } finally { $env:GOTOOLCHAIN = $oldToolchain }
+        }
+        if ($existingHash -eq $actual -and $null -ne $markerItem) { Write-Output "Already installed: $binary"; return }
         if ($null -ne (Get-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue)) { throw "Preserve or remove the reviewed backup first: $backup" }
     }
 
@@ -75,18 +93,24 @@ try {
     if ($LASTEXITCODE -ne 0 -or $versionOutput.Count -eq 0 -or -not $versionOutput[0]) { throw 'The executable did not report a version.' }
     $version = [string]$versionOutput[0]
 
+    $info = [ordered]@{ sha256 = $actual; version = [string]$version; installed_at = (Get-Date).ToUniversalTime().ToString('o') }
+    $markerStage = Join-Path $binDir ('.install-' + [Guid]::NewGuid().ToString('N') + '.json')
+    [IO.File]::WriteAllText($markerStage, ($info | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
+
     if ($null -ne $existing) { [IO.File]::Move($binary, $backup); $backedUp = $true }
     [IO.File]::Move($stage, $binary)
+    $placed = $true
+    if ($null -ne $markerItem) { [IO.File]::Replace($markerStage, $marker, $null) } else { [IO.File]::Move($markerStage, $marker) }
     $committed = $true
 
-    $info = [ordered]@{ sha256 = $actual; version = [string]$version; installed_at = (Get-Date).ToUniversalTime().ToString('o') }
-    [IO.File]::WriteAllText($marker, ($info | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
     Write-Output "Installed $binary (version $version). Add $binDir to PATH if needed."
 } finally {
     try {
+        if ($placed -and -not $committed) { [IO.File]::Delete($binary) }
         if ($backedUp -and -not $committed) { [IO.File]::Move($backup, $binary) }
         if ($stage -and [IO.File]::Exists($stage)) { [IO.File]::Delete($stage) }
         if ($download -and [IO.File]::Exists($download)) { [IO.File]::Delete($download) }
+        if ($markerStage -and [IO.File]::Exists($markerStage)) { [IO.File]::Delete($markerStage) }
     } finally {
         $lockStream.Dispose()
         [IO.File]::Delete($lock)

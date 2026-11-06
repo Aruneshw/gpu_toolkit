@@ -36,10 +36,33 @@ single-node inference, not tensor splitting.
   download). The prebuilt Windows installer does **not** require Go.
 - A separately built and compatible `llama-server` for real inference.
 - Linux amd64/arm64 or Windows amd64. macOS and AMD/Intel GPUs are not validated.
-- For multi-machine use: an explicit private VPN address (Tailscale/WireGuard)
-  configured by the operator. MeshCompute does not change firewalls or elevate.
+- For multi-machine use: a reachable creator-host address (public IP is opt-in),
+  or a private LAN/VPN for legacy direct peers. MeshCompute does not change
+  firewalls or elevate.
 
 ## Install
+
+### Ready-to-run packages and creator-hosted groups
+
+Download the Windows ZIP or Linux tarball from
+[Releases](https://github.com/Aruneshw/gpu_toolkit/releases). On Windows, extract
+the ZIP and run `.\join.cmd` in ordinary PowerShell. It installs, then prompts
+for your friend's invitation; Git and Go are not needed. The GitHub source ZIP
+also contains `join.cmd`, which fetches the published executable automatically.
+
+The person inviting friends runs their own group host:
+
+```sh
+meshcompute --home ./my-group host --listen '[YOUR_PUBLIC_IPV6]:7443' --public
+```
+
+The host prints an invitation and its local dashboard link. Each creator hosts
+an independent group; workers connect outbound and appear automatically.
+The creator's IP/port must be reachable from the friends' networks. See
+[Creator-hosted groups](docs/host-first-design.md) for IPv4 forwarding, Linux,
+Windows, reconnection, inference setup, and network requirements.
+
+### Source and manual installation
 
 Linux (user-scoped, offline build):
 
@@ -231,6 +254,7 @@ bits and directory `fsync` are not portable and are substituted accordingly.
 - [Security model](docs/security.md)
 - [llama.cpp backend contract](docs/backend.md)
 - [Windows deployment](docs/windows.md)
+- [Creator-hosted groups](docs/host-first-design.md)
 - [Implementation plan](docs/plan.md)
 - [Validation evidence](docs/validation.md)
 

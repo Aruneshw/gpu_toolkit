@@ -83,16 +83,45 @@ func NewRemote(dir string, c config.Config) *Remote {
 	return &Remote{dir: dir, c: c}
 }
 
-func (r *Remote) endpoint(name string) (string, error) {
+func (r *Remote) endpoint(ctx context.Context, name string) (string, error) {
 	if name == "local" {
-		return r.c.Advertise, nil
+		return r.c.LocalEndpoint(), nil
 	}
-	for _, p := range r.c.Peers {
+	peers, err := r.Peers(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range peers {
 		if p.Name == name {
 			return p.Endpoint, nil
 		}
 	}
 	return "", errors.New("unknown node; add it with peer add NAME HTTPS_ENDPOINT")
+}
+
+// Peers discovers creator-owned reverse connections through the authenticated
+// local agent, so CLI and dashboard processes share the same broker.
+func (r *Remote) Peers(ctx context.Context) ([]config.Peer, error) {
+	peers := append([]config.Peer{}, r.c.Peers...)
+	if !r.c.GroupHost {
+		return peers, nil
+	}
+	cl, err := security.Client(r.dir)
+	if err != nil {
+		return nil, err
+	}
+	defer cl.CloseIdleConnections()
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var connected []config.Peer
+	if err := readJSON(ctx, cl, r.c.LocalEndpoint(), "/v1/workers", nil, &connected); err != nil {
+		return nil, err
+	}
+	return append(peers, connected...), nil
+}
+
+func (r *Remote) Endpoint(ctx context.Context, name string) (string, error) {
+	return r.endpoint(ctx, name)
 }
 
 func readJSON(ctx context.Context, cl *http.Client, endpoint, path string, body, result any) error {
@@ -137,7 +166,11 @@ func (r *Remote) Statuses(ctx context.Context) ([]Node, error) {
 		return nil, err
 	}
 	defer cl.CloseIdleConnections()
-	peers := append([]config.Peer{{Name: "local", Endpoint: r.c.Advertise}}, r.c.Peers...)
+	configured, err := r.Peers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	peers := append([]config.Peer{{Name: "local", Endpoint: r.c.LocalEndpoint()}}, configured...)
 	rows := make([]Node, 0, len(peers))
 	for _, p := range peers {
 		var st agent.Status
@@ -159,7 +192,7 @@ func (r *Remote) Statuses(ctx context.Context) ([]Node, error) {
 // and network admission checks as the run command, then relays the agent's SSE
 // stream without retrying.
 func (r *Remote) Stream(ctx context.Context, name string, req backend.Request, emit func(backend.Chunk) error) error {
-	endpoint, err := r.endpoint(name)
+	endpoint, err := r.endpoint(ctx, name)
 	if err != nil {
 		return err
 	}
@@ -168,6 +201,7 @@ func (r *Remote) Stream(ctx context.Context, name string, req backend.Request, e
 		return err
 	}
 	defer cl.CloseIdleConnections()
+	cl.Timeout = backend.StreamTimeout + backend.Timeout
 	var st agent.Status
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 	err = readJSON(bounded, cl, endpoint, "/v1/status", nil, &st)
