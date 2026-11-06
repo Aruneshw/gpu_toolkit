@@ -11,6 +11,7 @@ import (
 	"meshcompute/internal/agent"
 	"meshcompute/internal/backend"
 	"meshcompute/internal/config"
+	"meshcompute/internal/dashboard"
 	"meshcompute/internal/model"
 	"meshcompute/internal/network"
 	"meshcompute/internal/resource"
@@ -70,35 +71,8 @@ func peer(c config.Config, name string) (string, error) {
 	return "", errors.New("unknown peer; use peer add NAME HTTPS_ENDPOINT")
 }
 
-type nodeStatus struct {
-	Name    string        `json:"name"`
-	Healthy bool          `json:"healthy"`
-	Status  *agent.Status `json:"status,omitempty"`
-	Error   string        `json:"error,omitempty"`
-}
-
-func statuses(ctx context.Context, dir string, c config.Config) ([]nodeStatus, error) {
-	cl, e := security.Client(dir)
-	if e != nil {
-		return nil, e
-	}
-	defer cl.CloseIdleConnections()
-	rows := []nodeStatus{}
-	peers := append([]config.Peer{{Name: "local", Endpoint: c.Advertise}}, c.Peers...)
-	for _, p := range peers {
-		var s agent.Status
-		bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
-		e := request(bounded, cl, p.Endpoint, "/v1/status", nil, &s)
-		cancel()
-		r := nodeStatus{Name: p.Name, Healthy: e == nil}
-		if e != nil {
-			r.Error = e.Error()
-		} else {
-			r.Status = &s
-		}
-		rows = append(rows, r)
-	}
-	return rows, nil
+func statuses(ctx context.Context, dir string, c config.Config) ([]dashboard.Node, error) {
+	return dashboard.NewRemote(dir, c).Statuses(ctx)
 }
 func operational(ctx context.Context, dir string, c config.Config, command string, args []string, in io.Reader, out io.Writer) error {
 	registry := filepath.Join(dir, "models")
@@ -117,6 +91,22 @@ func operational(ctx context.Context, dir string, c config.Config, command strin
 			return e
 		}
 		return writeJSON(out, s)
+	case "ui":
+		listen := "127.0.0.1:8081"
+		if e := flags("ui", args, func(f *flag.FlagSet) { f.StringVar(&listen, "listen", listen, "loopback listen address") }); e != nil {
+			return e
+		}
+		s, e := dashboard.New(dashboard.NewRemote(dir, c), listen, "")
+		if e != nil {
+			return e
+		}
+		if _, e = fmt.Fprintf(out, "MeshCompute dashboard: http://%s/?token=%s\n", s.Listen(), s.Token()); e != nil {
+			return e
+		}
+		if _, e = fmt.Fprintln(out, "Loopback only, token protected, aggregate telemetry only. Press Ctrl-C to stop."); e != nil {
+			return e
+		}
+		return s.Serve(ctx)
 	case "monitor":
 		interval := 5 * time.Second
 		if e := flags("monitor", args, func(f *flag.FlagSet) { f.DurationVar(&interval, "interval", interval, "refresh") }); e != nil {

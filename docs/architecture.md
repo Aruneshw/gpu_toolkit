@@ -4,8 +4,9 @@ Status: accepted for initial implementation. License: Apache-2.0.
 
 Go is selected over Rust for the standard-library HTTPS, certificate, process,
 and cross-compilation support and the available toolchain. Python is not needed
-for the first adapter. CLI and agent share typed packages in one repository.
-No dashboard or separate orchestration services are needed for the CLI MVP.
+for the first adapter. CLI, agent and dashboard share typed packages in one repository. The dashboard
+is an optional loopback-only process inside the same binary; there is no separate
+orchestration service and no remote administration plane.
 
 The control plane is HTTPS with pinned cluster CA and mutually authenticated
 node certificates. Enrollment uses a short-lived single-use random invitation,
@@ -24,6 +25,14 @@ Each node owns its own RAM/VRAM and model files. Initial inference uses a local
 llama-server, or sends a bounded authenticated request to a remote node running
 its own local llama-server. The adapter is an interface. There is no pretense
 that remote single-node inference is model-parallel distributed execution.
+
+The L1 dashboard browsers `GET /v1/status` from the local agent and configured
+peers over the existing pinned mTLS identity, sums the returned telemetry for
+display, and proxies one `POST /v1/run/stream` request to the selected node.
+Tokens are relayed as server-sent events. The browser never holds node
+certificates and cannot administer the cluster; the dashboard itself has no
+enrollment, revocation, configuration or shell route. Aggregate VRAM is a sum of
+independent GPUs, never an addressable pool.
 Memory estimates are conservative admission checks, not guarantees; KV cache
 requires model architecture information and actual runtime measurements.
 

@@ -68,6 +68,33 @@ request, including requests on already-open TLS connections. Missing, corrupt,
 or insecure state fails closed. Revocation does not cancel already-authorized
 in-flight requests or streams.
 
+## Localhost dashboard
+
+`meshcompute ui` starts a separate HTTP server bound to an explicit loopback IP.
+It is not part of the mTLS cluster plane: the browser cannot present a client
+certificate, so the dashboard authenticates locally and then uses `Client(dir)`
+for every agent call. It exposes only `GET /`, `GET /api/status` and
+`POST /api/run`.
+
+- A random 256-bit token is generated per start and printed once in the launch
+  URL. It is never written to configuration. Restarting the dashboard invalidates
+  old links. The first valid `?token=` request is exchanged for an HttpOnly,
+  SameSite=Strict cookie and redirected to `/`, so the token is removed from the
+  address bar.
+- Every route requires the token (cookie, `X-MeshCompute-Token`, or query). Host
+  must be a loopback name/IP with the configured port, which blocks DNS
+  rebinding. Cross-origin POSTs are rejected from a fixed loopback origin
+  allowlist; non-browser clients still need the token.
+- Responses set `Content-Security-Policy` with no external origins, plus
+  `nosniff`, `DENY` framing and no-referrer. Request bodies and streams are
+  bounded. The run proxy has a 30-minute hard stream limit and per-write
+  deadlines; it never retries or changes placement.
+- The dashboard can read aggregate telemetry and request inference on an
+  existing node. It cannot enroll, revoke, change configuration, read model
+  files, or run commands. It is not a sandbox against the same OS user,
+  malicious browser extensions, or a process that can read the launch terminal;
+  localhost is not an authorization boundary by itself.
+
 ## Persistence and operational limits
 
 Use a local POSIX filesystem supporting 0700 directories, 0600 files, atomic

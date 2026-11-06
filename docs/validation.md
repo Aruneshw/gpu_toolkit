@@ -7,8 +7,9 @@ checkout. It is not a production-readiness or hardware-certification claim.
 
 - Linux amd64 host, Go 1.26.8 (module declares Go 1.24).
 - NVIDIA RTX 3050 6 GB visible to `nvidia-smi` for resource discovery.
-- No `llama-server` binary and no licensed GGUF model were present, so no real
-  inference was executed.
+- A prebuilt llama.cpp `b12119` CPU runtime and a licensed LFM3 1.7B
+  `Q4_K_M` GGUF were used for real inference. The GPU was not used
+  (`--gpu-layers 0`); no CUDA toolkit was installed.
 - No second physical host or VPN link was available.
 - GitHub Actions also ran the test suite on Ubuntu and Windows runners with Go
   1.24.x and stable (see the CI section below).
@@ -21,7 +22,7 @@ All commands were run from the repository root.
 | --- | --- |
 | `gofmt -l .` | no output |
 | `go vet ./...` | pass |
-| `go test ./... -count=1` | pass (75 test cases including subtests) |
+| `go test ./... -count=1` | pass (104 test cases including subtests) |
 | `go test -race ./... -count=1` | pass |
 | `GOPROXY=off GOTOOLCHAIN=local go build ./...` | pass |
 | `go test ./... -count=1` with `GOPROXY=off` | pass |
@@ -36,6 +37,15 @@ path:
 
 ```sh
 go test ./internal/agent -run TestTwoAgentTLSDispatchFixture -count=20
+```
+
+Result: pass.
+
+The streaming and dashboard paths were also stress-run:
+
+```sh
+go test -race ./internal/backend ./internal/agent ./internal/dashboard ./internal/sse ./internal/cli -count=3
+go test -race ./internal/agent -run TestTwoAgentTLSStreamFixture -count=10
 ```
 
 Result: pass.
@@ -66,13 +76,20 @@ failure; finding 5 below records the fix that made CI green.
 - **Backend and registry:** GGUF magic and full-file SHA-256 registration,
   duplicate/mutation rejection, KV arithmetic and overflow, loopback endpoint
   restrictions, health/model/context checks, tokenizer budget enforcement,
-  cancellation, response limits, and exact launch arguments with ambient
-  `LLAMA_*`/`GGML_RPC*` removal. The test backend is an HTTP fixture and a
+  cancellation, response limits, streaming chunk parsing, missing/invalid final
+  chunks, emit-failure propagation, and exact launch arguments with ambient
+  `LLAMA_*`/`GGML_RPC*` removal. The automated fixture is an HTTP server and a
   helper subprocess, not a language model.
 - **Agent:** real TLS enrollment and dispatch between two state directories on
-  loopback, participant attribution, busy rejection, missing-model rejection,
-  prompt non-leakage into audit output, malformed/trailing/oversized request
-  rejection, and revocation.
+  loopback for both JSON and SSE, participant attribution, busy rejection,
+  missing-model rejection, prompt non-leakage into audit output,
+  malformed/trailing/oversized request rejection, stream error events, slot
+  release after success/failure, and revocation.
+- **Dashboard and SSE:** token bootstrap and cookie, constant-time token checks,
+  non-loopback Host and cross-origin POST rejection, security headers, aggregate
+  RAM/VRAM/model arithmetic, node status failures, run dispatch fields, strict
+  request rejection, streamed token/done/error relay, CRLF/comments, truncated
+  streams, and size limits.
 - **Resources, scheduler, network, CLI, config:** meminfo/GPU CSV parsing with
   unknown values left unknown, cancelled discovery, disk probing, synthetic-only
   scheduling simulations, stale-worker/unstable-network rejection, explicit
@@ -93,8 +110,19 @@ failure; finding 5 below records the fix that made CI green.
 3. Local coordinator `start` followed by self `status`: healthy, proving the
    self-identity path. The Linux installer built offline, ran, and uninstalled
    cleanly.
+4. Real CPU inference on the Linux host: llama.cpp `b12119`, LFM3 1.7B
+   `Q4_K_M`, context 2048, `--gpu-layers 0`. `meshcompute run` returned
+   `"Paris, and the population of France is about 67 million..."` at
+   6.78 tok/s.
+5. Real dashboard streaming on the same stack: `meshcompute ui` printed a
+   64-hex-character token URL; requests without a token, with a non-loopback
+   Host, or with a bad origin returned 403. `GET /api/status` reported one
+   healthy node, one GPU, 6,442,450,944 bytes aggregate VRAM, and the explicit
+   “not pooled” scope text. `POST /api/run` streamed 16 `event: token` frames
+   followed by `event: done` at 9.80 tok/s.
 
-These use one host and loopback, not a physical two-machine VPN.
+These use one host and loopback, not a physical two-machine VPN. The GPU was
+visible but not used for inference.
 
 ## Integration review findings fixed during completion
 
@@ -142,8 +170,9 @@ These use one host and loopback, not a physical two-machine VPN.
 
 ## Not validated
 
-- Real GGUF loading or token generation against `llama-server`.
-- CUDA execution, GPU layer offload, or measured VRAM behavior.
+- CUDA execution, GPU layer offload, or measured VRAM behavior. CPU-only
+  inference was executed; the RTX 3050 was detected but unused.
+- Real inference over a remote node or WAN link.
 - Windows deployment beyond unit/integration tests, and PowerShell installer
   execution. CI runs the Go tests on Windows but only parses the scripts; it
   does not run them as a non-administrator.

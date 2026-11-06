@@ -5,23 +5,26 @@ inference on separate devices that each own their models. It is not a
 model-parallel distributed runtime: a request is executed by one local
 `llama.cpp` server on one node, chosen explicitly or by bounded admission.
 
-The CLI and HTTPS agent share one repository and one state directory. There is
-no dashboard, no remote administration, no model download, and no automatic
-retry or mid-generation placement change.
+The CLI, HTTPS agent and localhost dashboard share one repository and one state
+directory. There is no remote administration, no model download, and no
+automatic retry or mid-generation placement change. The dashboard aggregates
+telemetry and streams tokens from one selected node; it does not create a
+shared VRAM pool.
 
 ## Status and scope
 
 - Implemented and unit-tested: configuration, hardware discovery, TLS
   enrollment, single-use invitations, mutual authentication, revocation,
-  model registry, llama.cpp HTTP adapter, memory/network admission, scheduler
-  simulation, CLI, Linux/Windows installers, and CI.
+  model registry, llama.cpp HTTP adapter (including SSE streaming),
+  memory/network admission, scheduler simulation, CLI, token-protected
+  localhost dashboard, Linux/Windows installers, and CI.
 - Verified on this machine: `go test ./...`, `go test -race ./...`, offline
   builds, Linux/Windows/arm64 cross-builds, two-home TLS enrollment/status/
-  revocation, and the Linux installer.
-- **Not verified here:** real GGUF inference, CUDA/GPU execution, a physical
-  two-machine VPN, Windows deployment beyond CI tests, or llama.cpp RPC.
-  Cross-compiling is not runtime testing. See
-  [docs/validation.md](docs/validation.md).
+  revocation, the Linux installer, real CPU-only GGUF inference, and
+  end-to-end dashboard token streaming.
+- **Not verified here:** CUDA/GPU execution, a physical two-machine VPN,
+  Windows deployment beyond CI tests, or llama.cpp RPC. Cross-compiling is not
+  runtime testing. See [docs/validation.md](docs/validation.md).
 
 RPC is deliberately not built, launched, discovered, or claimed. Sending work to
 one authenticated remote node that runs its own local model is remote
@@ -106,6 +109,18 @@ meshcompute monitor --interval 5s
 agent. A node accepts only its own leaf certificate or the cluster peer it is
 configured to trust; worker-to-worker access is rejected.
 
+Start the localhost dashboard on any enrolled node:
+
+```sh
+meshcompute ui
+# MeshCompute dashboard: http://127.0.0.1:8081/?token=<one-time printed token>
+```
+
+Open the printed URL. The token is exchanged for an HttpOnly, SameSite=Strict
+cookie and removed from the address bar. The page shows every configured node's
+GPU, VRAM, RAM, models and backend health, and can stream a prompt to one
+selected node. See [Dashboard scope](#dashboard-scope).
+
 Revoke a worker locally on the coordinator:
 
 ```sh
@@ -142,6 +157,22 @@ selected node to advertise exactly the requested model and enough context. It
 never falls back silently after generation starts. `simulate` prints clearly
 labeled synthetic scheduling examples and performs no inference.
 
+## Dashboard scope
+
+`meshcompute ui` is a control panel, not a distributed GPU runtime:
+
+- Telemetry from healthy nodes is summed for display only. “VRAM total” is the
+  sum of each GPU's memory, not one addressable pool.
+- A prompt is dispatched to exactly one selected node. The model must already
+  be registered and loaded there; nothing is sharded or migrated mid-generation.
+- Tokens stream to the browser over server-sent events. Stopping the browser
+  request cancels that generation; failures are reported and never retried.
+- The server binds loopback only, requires a random 256-bit token, validates
+  Host and Origin, and serves a strict CSP. There is no remote administration.
+
+True cross-device model splitting is still not implemented; llama.cpp RPC
+remains disabled.
+
 ## Configuration and commands
 
 State lives under the user config directory (`MESHCOMPUTE_HOME` overrides it):
@@ -171,6 +202,10 @@ Read [docs/security.md](docs/security.md) before deployment. Key points:
   IP endpoints, proxies and redirects disabled.
 - The local filesystem is the administrative authority. There are no remote
   administrative routes and no HTTP enrollment fallback.
+- The dashboard binds `127.0.0.1` only, requires a 256-bit token, rejects
+  non-loopback Host headers and cross-origin POSTs, and sets a strict CSP. It
+  can only read telemetry and request inference; it cannot enroll, revoke,
+  change configuration, or reach a shell.
 - No certificate rotation, CRL/OCSP, HA consensus, rate limiting, or audit log
   shipping is built in. Those remain deployment responsibilities.
 - Treat GGUF files and backend binaries as untrusted inputs. Never expose

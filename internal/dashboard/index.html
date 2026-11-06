@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeshCompute dashboard</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117;
+    --panel: #151b23;
+    --panel-2: #1b232d;
+    --line: #29323d;
+    --text: #e6edf3;
+    --muted: #8b98a8;
+    --accent: #7ee2a8;
+    --accent-dim: #214c37;
+    --warn: #ffb454;
+    --bad: #ff7b72;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.25rem 1.5rem;
+    border-bottom: 1px solid var(--line);
+    background: #10161d;
+  }
+  h1 { margin: 0; font-size: 1.15rem; letter-spacing: .02em; }
+  h1 span { color: var(--accent); }
+  header p { margin: .15rem 0 0; color: var(--muted); font-size: .85rem; }
+  main { max-width: 1180px; margin: 0 auto; padding: 1.25rem 1.5rem 4rem; }
+  .scope {
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--warn);
+    background: var(--panel);
+    color: var(--muted);
+    padding: .75rem 1rem;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    font-size: .9rem;
+  }
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: .75rem;
+    margin-bottom: 1rem;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: .8rem .9rem;
+  }
+  .card .label { color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; }
+  .card .value { font: 600 1.35rem/1.3 var(--mono); margin-top: .2rem; }
+  .card .sub { color: var(--muted); font-size: .78rem; margin-top: .1rem; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    overflow: hidden;
+  }
+  .panel-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: .8rem 1rem;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel-2);
+  }
+  .panel-head h2 { margin: 0; font-size: .95rem; }
+  .panel-head .note { color: var(--muted); font-size: .78rem; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .86rem; }
+  th, td { padding: .55rem 1rem; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: .72rem; text-transform: uppercase; letter-spacing: .07em; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num { font-family: var(--mono); }
+  .dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; margin-right: .4rem; background: var(--bad); }
+  .dot.ok { background: var(--accent); }
+  .empty { color: var(--muted); padding: 1rem; }
+  .prompt { padding-bottom: 1rem; }
+  .prompt h2 { padding: .8rem 1rem; margin: 0; border-bottom: 1px solid var(--line); background: var(--panel-2); font-size: .95rem; }
+  .form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: .75rem;
+    padding: 1rem 1rem 0;
+  }
+  label { display: grid; gap: .3rem; color: var(--muted); font-size: .78rem; }
+  input, select, textarea {
+    width: 100%;
+    background: #0b1016;
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: .5rem .6rem;
+    font: inherit;
+  }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-dim); border-color: var(--accent); }
+  textarea { margin: 1rem 1rem 0; width: calc(100% - 2rem); resize: vertical; font-family: var(--mono); font-size: .85rem; }
+  .actions { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; padding: 1rem 1rem 0; }
+  button {
+    background: var(--accent-dim);
+    color: var(--text);
+    border: 1px solid #2f6f4c;
+    border-radius: 6px;
+    padding: .45rem .9rem;
+    font: 600 .85rem/1.2 system-ui, sans-serif;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: #2b6346; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.secondary { background: transparent; border-color: var(--line); color: var(--muted); }
+  .status-text { color: var(--muted); font-size: .82rem; font-family: var(--mono); }
+  pre#output {
+    margin: 1rem;
+    min-height: 8rem;
+    max-height: 26rem;
+    overflow: auto;
+    background: #0b1016;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: .8rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font: .85rem/1.55 var(--mono);
+    color: #d7e2ee;
+  }
+  pre#output.streaming::after { content: "\2588"; color: var(--accent); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .footer { color: var(--muted); font-size: .78rem; text-align: center; margin-top: 1.5rem; }
+  @media (max-width: 640px) {
+    header { padding: 1rem; }
+    main { padding: 1rem; }
+    th, td { padding: .5rem .7rem; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Mesh<span>Compute</span></h1>
+    <p>All enrolled laptops, one control panel</p>
+  </div>
+  <div class="actions" style="padding:0">
+    <span class="status-text" id="refreshState">starting…</span>
+    <button id="refresh" class="secondary" type="button">Refresh</button>
+  </div>
+</header>
+<main>
+  <div class="scope" id="scope">Loading cluster telemetry…</div>
+
+  <section class="stats" aria-label="Cluster totals">
+    <div class="card"><div class="label">Nodes</div><div class="value" id="statNodes">—</div><div class="sub" id="statNodesSub">healthy / total</div></div>
+    <div class="card"><div class="label">GPUs</div><div class="value" id="statGPUs">—</div><div class="sub">across healthy nodes</div></div>
+    <div class="card"><div class="label">VRAM total</div><div class="value" id="statVRAM">—</div><div class="sub" id="statVRAMSub">aggregate, not pooled</div></div>
+    <div class="card"><div class="label">VRAM free</div><div class="value" id="statFree">—</div><div class="sub">sum of free memory</div></div>
+    <div class="card"><div class="label">RAM available</div><div class="value" id="statRAM">—</div><div class="sub" id="statRAMSub">—</div></div>
+    <div class="card"><div class="label">Models</div><div class="value" id="statModels">—</div><div class="sub">registered on backends</div></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>GPU inventory</h2><span class="note" id="gpuNote"></span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Node</th><th>GPU</th><th>VRAM used</th><th>Free</th><th>Util</th><th>Driver</th></tr></thead>
+        <tbody id="gpuRows"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Nodes</h2><span class="note">mTLS health and backend state</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Node</th><th>State</th><th>Backend</th><th>Models</th><th>Busy</th><th>Last</th></tr></thead>
+        <tbody id="nodeRows"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel prompt">
+    <h2>Run inference on one node</h2>
+    <div class="form-grid">
+      <label>Node<select id="node"><option value="">no ready node</option></select></label>
+      <label>Model<select id="model"><option value="">—</option></select></label>
+      <label>Max tokens<input id="maxTokens" type="number" min="1" max="32768" value="128"></label>
+      <label>Context<input id="context" type="number" min="1" max="1048576" value="2048"></label>
+    </div>
+    <label style="padding:1rem 1rem 0">Prompt
+      <textarea id="prompt" rows="4">The capital of France is</textarea>
+    </label>
+    <div class="actions">
+      <button id="run" type="button">Run</button>
+      <button id="stop" class="secondary" type="button" disabled>Stop</button>
+      <span class="status-text" id="runState"></span>
+    </div>
+    <pre id="output" aria-live="polite"></pre>
+  </section>
+
+  <div class="footer">Every request is dispatched to exactly one node. No unified VRAM pool, no model splitting.</div>
+</main>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var controller = null;
+  var poll = null;
+
+  function esc(value) {
+    return String(value == null ? "" : value).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function fmtBytes(n) {
+    if (typeof n !== "number" || !isFinite(n) || n < 0) return "—";
+    var units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    var i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n.toFixed(0) : n.toFixed(1)) + " " + units[i];
+  }
+  function pct(used, total) {
+    if (!total || used == null) return "—";
+    return Math.round((used / total) * 100) + "%";
+  }
+  function setText(id, value) { $(id).textContent = value; }
+
+  function fillSelect(select, values, fallback) {
+    var previous = select.value;
+    select.textContent = "";
+    values.forEach(function (value) {
+      var option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      select.appendChild(option);
+    });
+    if (values.indexOf(previous) >= 0) select.value = previous;
+    else if (fallback && values.indexOf(fallback) >= 0) select.value = fallback;
+    else if (values.length) select.value = values[0];
+  }
+
+  function renderStats(data) {
+    var a = data.aggregate;
+    setText("statNodes", a.healthy + " / " + a.nodes);
+    setText("statNodesSub", "healthy / total");
+    setText("statGPUs", String(a.gpus));
+    setText("statVRAM", fmtBytes(a.vram_total_bytes));
+    setText("statVRAMSub", "aggregate, not pooled");
+    setText("statFree", fmtBytes(a.vram_free_bytes));
+    setText("statRAM", fmtBytes(a.ram_available_bytes));
+    setText("statRAMSub", fmtBytes(a.ram_total_bytes) + " total");
+    setText("statModels", String(a.models.length));
+    setText("scope", data.scope);
+  }
+
+  function renderGPUs(data) {
+    var rows = [];
+    data.nodes.forEach(function (node) {
+      if (!node.healthy || !node.status) return;
+      var resources = node.status.resources || {};
+      (resources.gpus || []).forEach(function (gpu) {
+        var total = gpu.total_bytes;
+        var free = gpu.free_bytes;
+        var used = (typeof total === "number" && typeof free === "number") ? total - free : null;
+        rows.push(
+          "<tr><td>" + esc(node.name) + "</td>" +
+          "<td>" + esc(gpu.name || "unknown GPU") + "</td>" +
+          "<td class=\"num\">" + fmtBytes(used) + " <span style=\"color:var(--muted)\">" + pct(used, total) + "</span></td>" +
+          "<td class=\"num\">" + fmtBytes(free) + "</td>" +
+          "<td class=\"num\">" + (typeof gpu.utilization_percent === "number" ? Math.round(gpu.utilization_percent) + "%" : "—") + "</td>" +
+          "<td class=\"num\">" + esc(gpu.driver || "—") + "</td></tr>"
+        );
+      });
+    });
+    $("gpuRows").innerHTML = rows.length ? rows.join("") : "<tr><td colspan=\"6\" class=\"empty\">No GPU telemetry reported. Check that nvidia-smi is available on each node.</td></tr>";
+    setText("gpuNote", rows.length + (rows.length === 1 ? " GPU visible" : " GPUs visible"));
+  }
+
+  function renderNodes(data) {
+    var rows = data.nodes.map(function (node) {
+      var status = node.status || {};
+      var backend = status.backend || {};
+      var models = (backend.models || []).join(", ");
+      var state = node.healthy ? "<span class=\"dot ok\"></span>healthy" : "<span class=\"dot\"></span>unreachable";
+      var backendState = status.backend_ready ? "ready" : "not ready";
+      var last = status.last_outcome || "—";
+      if (status.tokens_per_second) last += " · " + status.tokens_per_second.toFixed(1) + " tok/s";
+      if (node.error) last = node.error;
+      return "<tr><td>" + esc(node.name) + "</td><td>" + state + "</td><td>" + backendState +
+        " <span style=\"color:var(--muted)\">" + (backend.context ? "ctx " + esc(backend.context) : "") + "</span></td>" +
+        "<td>" + esc(models || "—") + "</td><td>" + (status.busy ? "busy" : "idle") + "</td><td>" + esc(last) + "</td></tr>";
+    });
+    $("nodeRows").innerHTML = rows.length ? rows.join("") : "<tr><td colspan=\"6\" class=\"empty\">No nodes configured.</td></tr>";
+  }
+
+  function updateModels() {
+    var data = window.__meshData;
+    if (!data) return;
+    var selectedNode = $("node").value;
+    var node = data.nodes.find(function (n) { return n.name === selectedNode; });
+    var status = (node && node.status) || {};
+    var backend = status.backend || {};
+    fillSelect($("model"), backend.models || [], "lfm3");
+    if (backend.context) {
+      $("context").max = String(backend.context);
+      var current = Number($("context").value) || 2048;
+      if (current > backend.context) $("context").value = String(backend.context);
+    }
+  }
+
+  function renderControls(data) {
+    var ready = data.nodes.filter(function (n) {
+      return n.healthy && n.status && n.status.backend_ready && n.status.backend && (n.status.backend.models || []).length;
+    }).map(function (n) { return n.name; });
+    var current = $("node").value;
+    fillSelect($("node"), ready, ready.indexOf("local") >= 0 ? "local" : "");
+    if (current && ready.indexOf(current) < 0) {
+      // Keep the selector on a valid node after a failure.
+      $("node").value = ready.length ? ready[0] : "";
+    }
+    $("run").disabled = ready.length === 0;
+    updateModels();
+  }
+
+  function render(data) {
+    window.__meshData = data;
+    renderStats(data);
+    renderGPUs(data);
+    renderNodes(data);
+    renderControls(data);
+  }
+
+  async function loadStatus() {
+    try {
+      var res = await fetch("/api/status", { cache: "no-store" });
+      if (!res.ok) throw new Error((await res.text()).trim() || ("HTTP " + res.status));
+      render(await res.json());
+      setText("refreshState", "updated " + new Date().toLocaleTimeString());
+    } catch (err) {
+      setText("refreshState", "status unavailable");
+      $("scope").textContent = "Cluster status unavailable: " + err.message;
+    }
+  }
+
+  function parseEvent(block) {
+    var event = "message";
+    var data = [];
+    block.split("\n").forEach(function (line) {
+      if (line.indexOf("event:") === 0) event = line.slice(6).trim();
+      else if (line.indexOf("data:") === 0) data.push(line.slice(5).trim());
+    });
+    if (!data.length) return null;
+    try { return { event: event, data: JSON.parse(data.join("\n")) }; }
+    catch (_) { return null; }
+  }
+
+  async function readStream(res) {
+    var reader = res.body.getReader();
+    var decoder = new TextDecoder();
+    var buffer = "";
+    var output = $("output");
+    var rate = null;
+    while (true) {
+      var chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      var index;
+      while ((index = buffer.indexOf("\n\n")) >= 0) {
+        var block = buffer.slice(0, index);
+        buffer = buffer.slice(index + 2);
+        var ev = parseEvent(block);
+        if (!ev) continue;
+        if (ev.event === "token") {
+          output.textContent += ev.data.content || "";
+          output.scrollTop = output.scrollHeight;
+        } else if (ev.event === "done") {
+          rate = ev.data.tokens_per_second;
+        } else if (ev.event === "error") {
+          throw new Error(ev.data.error || "inference failed");
+        }
+      }
+    }
+    return rate;
+  }
+
+  function setRunning(running) {
+    $("run").disabled = running || !$("node").value;
+    $("stop").disabled = !running;
+    $("node").disabled = running;
+    $("model").disabled = running;
+    $("output").classList.toggle("streaming", running);
+  }
+
+  async function runInference() {
+    var node = $("node").value;
+    var model = $("model").value;
+    if (!node || !model) return;
+    var body = {
+      node: node,
+      model: model,
+      prompt: $("prompt").value,
+      max_tokens: Number($("maxTokens").value),
+      context: Number($("context").value)
+    };
+    if (!body.prompt.trim()) { setText("runState", "prompt required"); return; }
+    if (!(body.max_tokens > 0) || !(body.context > 0) || body.max_tokens >= body.context) {
+      setText("runState", "max tokens must be less than context");
+      return;
+    }
+    controller = new AbortController();
+    $("output").textContent = "";
+    setRunning(true);
+    setText("runState", "streaming from " + node + "…");
+    try {
+      var res = await fetch("/api/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+      if (!res.ok) throw new Error((await res.text()).trim() || ("HTTP " + res.status));
+      var rate = await readStream(res);
+      setText("runState", rate ? "completed · " + rate.toFixed(1) + " tok/s on " + node : "completed on " + node);
+    } catch (err) {
+      if (err.name === "AbortError") {
+        $("output").textContent += "\n[stopped]";
+        setText("runState", "stopped");
+      } else {
+        $("output").textContent += "\n[error] " + err.message;
+        setText("runState", "failed");
+      }
+    } finally {
+      controller = null;
+      setRunning(false);
+      $("node").disabled = false;
+      $("model").disabled = false;
+      loadStatus();
+    }
+  }
+
+  $("refresh").addEventListener("click", loadStatus);
+  $("run").addEventListener("click", runInference);
+  $("stop").addEventListener("click", function () { if (controller) controller.abort(); });
+  $("node").addEventListener("change", updateModels);
+
+  loadStatus();
+  poll = setInterval(loadStatus, 5000);
+})();
+</script>
+</body>
+</html>

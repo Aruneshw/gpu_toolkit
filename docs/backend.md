@@ -11,9 +11,13 @@ implementation), not an unpinned third-party binary:
 
 The adapter uses native `POST /completion`, not OpenAI chat completion. It sends
 `prompt`, bounded `n_predict`, `stream:false` and `cache_prompt:false`; reads
-`content`, `truncated` and `timings.predicted_per_second`. Prompts are raw text;
-chat template application is not implemented. Missing timing is reported as zero
-(unavailable), never a fabricated benchmark.
+`content`, `truncated` and `timings.predicted_per_second`. For streaming it sends
+`stream:true`, parses `data: {...}` SSE frames, relays non-empty `content`, and
+requires a final frame with `stop:true` carrying `timings`. A clean EOF or
+`[DONE]` before that final frame is an error, so a truncated response is never
+reported as complete. Prompts are raw text; chat template application is not
+implemented. Missing timing is reported as zero (unavailable), never a fabricated
+benchmark.
 
 Before each inference it checks `GET /health` (`status:ok`), `GET /v1/models`
 (exact selected alias, exactly one advertised model), and `GET /props`
@@ -27,11 +31,14 @@ path and protect the local process and registry from modification.
 
 Only HTTP numeric loopback IP origins are accepted (IPv4 or IPv6). Hostname
 resolution, external endpoints, proxies, URL credentials, paths, queries and
-redirects are disallowed. Each generation has a two-minute overall deadline,
-including all checks; earlier caller cancellation wins. Prompt limit is 1 MiB,
-each response limit 8 MiB, output limit 32,768 tokens, and context limit 1,048,576
-tokens (also bounded by the actual server). No automatic retries or placement
-changes occur. Loopback is not authentication against other local users.
+redirects are disallowed. Non-streaming generation has a two-minute overall
+deadline including all checks. Streaming uses the same two-minute admission
+phase, then a hard 30-minute generation bound plus caller cancellation; the
+agent also sets per-write deadlines so a stalled browser cannot hold the stream
+open. Prompt limit is 1 MiB, each response limit 8 MiB, output limit 32,768
+tokens, and context limit 1,048,576 tokens (also bounded by the actual server).
+No automatic retries or placement changes occur. Loopback is not authentication
+against other local users.
 
 ## Go integration
 
@@ -43,12 +50,14 @@ model.Verify(entry model.Entry) error
 backend.New(endpoint string) (*backend.Llama, error)
 (*backend.Llama).Health(ctx context.Context) (backend.Capabilities, error)
 (*backend.Llama).Generate(ctx context.Context, r backend.Request) (backend.Response, error)
+(*backend.Llama).GenerateStream(ctx context.Context, r backend.Request, emit func(backend.Chunk) error) error
 backend.Run(ctx context.Context, c backend.LaunchConfig) error
 ```
 
 `Entry` fields: `Name, Path, SHA256 string; SizeBytes int64`.
 `Request` fields: `Model, Prompt string; MaxTokens, Context int`.
 `Response` fields: `Content string; TokensPerSecond float64`.
+`Chunk` fields: `Content string; Done bool; TokensPerSecond float64`.
 `Capabilities` fields: `Models []string; Context int`.
 `LaunchConfig` fields: `Binary, RegistryDir, Model, Endpoint string;
 Context, GPULayers int; Stdout, Stderr io.Writer`.
@@ -56,7 +65,8 @@ Context, GPULayers int; Stdout, Stderr io.Writer`.
 The caller must serialize inference, require local registration via Get/Verify,
 and add only authenticated actual participant identity to its own response.
 The backend does not invent participant, GPU-use or distributed-execution claims.
-The exported `backend.Adapter` interface contains Health and Generate.
+The exported `backend.Adapter` interface contains Health and Generate;
+streaming is available on the concrete `*Llama` type through `GenerateStream`.
 Run requires an absolute trusted executable path and explicit valid port. It
 blocks in the foreground, uses argument-array exec without a shell, loads the
 registered absolute GGUF path after SHA256 verification, fixes parallelism to
@@ -152,7 +162,8 @@ runs its own local model is remote single-node inference, not tensor splitting.
 `go test ./internal/model ./internal/backend` uses local HTTP fixtures and a
 test helper subprocess. It verifies registry hashing/magic, mutation rejection,
 KV arithmetic/overflow, endpoint restrictions, alias/context/token checks,
-cancellation, response bounds, HTTP failures and launch arguments. A fake GGUF
+cancellation, response bounds, HTTP failures, streaming frame parsing,
+missing/truncated final frames and launch arguments. A fake GGUF
 and fixture text are deliberately not evidence of real model loading/inference.
 No real llama-server, CUDA, Windows runtime or distributed inference result is
 claimed by these tests. Run a real licensed model and inspect logs on each

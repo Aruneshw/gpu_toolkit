@@ -27,6 +27,7 @@ Usage: meshcompute [--home DIR] COMMAND
   start                           run the HTTPS agent in the foreground
   status                          local and configured peer resources
   monitor [--interval 5s]          periodically show status until Ctrl-C
+  ui [--listen 127.0.0.1:8081]     token-protected localhost dashboard
   doctor                          shareable redacted diagnostics
   backend list                    detect local llama.cpp backend
   backend serve NAME [options]    launch a registered local GGUF

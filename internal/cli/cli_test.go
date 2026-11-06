@@ -13,7 +13,7 @@ func TestCLIParsing(t *testing.T) {
 	if e := config.Install(d); e != nil {
 		t.Fatal(e)
 	}
-	for _, args := range [][]string{{"--invalid"}, {"bogus"}, {"install", "extra"}, {"cluster"}, {"pair", "--ttl", "no"}, {"join"}, {"peer", "add"}, {"monitor", "--interval", "0s"}, {"run"}, {"run", "tiny", "--unknown"}, {"status", "extra"}, {"config", "set", "listen", "0.0.0.0:7443"}, {"model", "add", "../../bad", "none"}} {
+	for _, args := range [][]string{{"--invalid"}, {"bogus"}, {"install", "extra"}, {"cluster"}, {"pair", "--ttl", "no"}, {"join"}, {"peer", "add"}, {"monitor", "--interval", "0s"}, {"run"}, {"run", "tiny", "--unknown"}, {"status", "extra"}, {"ui", "--listen", "0.0.0.0:8081"}, {"ui", "extra"}, {"config", "set", "listen", "0.0.0.0:7443"}, {"model", "add", "../../bad", "none"}} {
 		var out bytes.Buffer
 		full := append([]string{"--home", d}, args...)
 		if e := Run(context.Background(), full, strings.NewReader(""), &out, "test"); e == nil {
