@@ -5,6 +5,11 @@
 **Release:** https://github.com/Aruneshw/gpu_toolkit/releases/tag/v0.2.0
 **Machines:** creator Linux laptop (host) and a friend's Windows 11 laptop (worker)
 
+> This is the short overview. The complete narrative — architecture explained
+> from first principles, the full history, every failed attempt with evidence,
+> the proposed architecture v2, and the complete command reference — is in
+> [full-project-report.md](full-project-report.md).
+
 This report records what was built, how it works, every connection method that was
 tried, what failed and why, what is still missing, and a clean rebuild procedure
 with every command and its purpose.
