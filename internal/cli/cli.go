@@ -13,6 +13,7 @@ import (
 	"meshcompute/internal/config"
 	"meshcompute/internal/security"
 	"net"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -22,7 +23,7 @@ Usage: meshcompute [--home DIR] COMMAND
   install                         initialize user configuration (no downloads)
   config set KEY VALUE            listen | backend_url (before cluster creation)
   cluster create                  create private CA and coordinator identity
-  host [--listen IP:7443] [--public] [--advertise https://IP:7443]
+  host [--auto|--listen IP:7443] [--public] [--advertise https://IP:7443]
                                   create/resume a group, show invite and dashboard
   pair [--ttl 5m]                 issue a secret, one-use invitation
   join [CODE|--stdin]             paste invite; interactive join starts the worker
@@ -49,6 +50,26 @@ func writeJSON(w io.Writer, v any) error {
 	e.SetIndent("", "  ")
 	return e.Encode(v)
 }
+// joinFailure separates "the host is unreachable" from "the invitation was
+// refused" so users are not told to check the wrong thing.
+func joinFailure(code string, cause error) error {
+	endpoint, _, err := security.InvitationEndpoint(code)
+	if err != nil {
+		return fmt.Errorf("join failed: the invitation is malformed or truncated; paste the whole code\n  caused by: %w", cause)
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("join failed: the invitation has an invalid endpoint\n  caused by: %w", cause)
+	}
+	d := net.Dialer{Timeout: 8 * time.Second}
+	conn, dialErr := d.Dial("tcp", u.Host)
+	if dialErr != nil {
+		return fmt.Errorf("join failed: cannot reach the group host at %s\n  the host must be running, the address must be current, and TCP must be allowed through its firewall and router\n  caused by: %v", u.Host, dialErr)
+	}
+	conn.Close()
+	return fmt.Errorf("join failed: the host at %s was reachable but refused enrollment\n  the invitation is probably expired or already used; generate a new one on the host with: meshcompute pair\n  caused by: %w", u.Host, cause)
+}
+
 func flags(name string, args []string, setup func(*flag.FlagSet)) error {
 	f := flag.NewFlagSet(name, flag.ContinueOnError)
 	f.SetOutput(io.Discard)
@@ -190,7 +211,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out io.Writer, versio
 		}
 		host, _, _ := net.SplitHostPort(c.Listen)
 		if e := security.JoinHost(ctx, dir, code, host); e != nil {
-			return fmt.Errorf("join failed: verify invitation expiry and host reachability: %w", e)
+			return joinFailure(code, e)
 		}
 		_, reverse, _, e := security.Group(dir)
 		if e != nil {

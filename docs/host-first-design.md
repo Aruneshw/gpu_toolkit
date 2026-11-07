@@ -9,12 +9,16 @@ There is no shared MeshCompute server, central relay, or VPN dependency.
 Download a package from [Releases](https://github.com/Aruneshw/gpu_toolkit/releases).
 The Windows ZIP includes the executable; the Linux tarball contains `meshcompute`.
 
-**Creator, Linux:** extract the tarball and run (replace the example address):
+**Creator, Linux:** extract the tarball and run:
 
 ```sh
-./meshcompute --home "$HOME/.config/meshcompute-group" host \
-  --listen '[YOUR_PUBLIC_IPV6]:7443' --public
+./meshcompute --home "$HOME/.config/meshcompute-group" host --auto
 ```
+
+`--auto` selects a globally routable IPv6 address when the computer has one,
+because such an address needs no router port forwarding. Otherwise it selects
+the private IPv4 address and tells you which TCP port to forward. An explicit
+`--listen`/`--advertise` pair always overrides the automatic choice.
 
 **Creator, Windows:** extract the ZIP, run `.\install.cmd`, then in a new terminal:
 
@@ -78,6 +82,12 @@ requires a public address plus a port forward when behind a router. Carrier
 NAT, blocked IPv6, sleeping hosts, and changing IPs can prevent connection.
 An invitation establishes trust, not an internet route. MeshCompute does not
 claim to bypass these restrictions or automatically change router/firewall rules.
+
+`host --auto` prints the chosen address, whether the friend needs port
+forwarding, and the port to allow. `join` now distinguishes the two failure
+cases: it first tests TCP reachability of the address in the invitation and
+reports "cannot reach the group host" separately from "the host was reachable
+but refused enrollment" (expired or reused invitation).
 For two processes on one machine, use loopback and omit `--public`.
 
 `listen` and `advertise` addresses are certified. To change them, create a new

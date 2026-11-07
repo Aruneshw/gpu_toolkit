@@ -341,6 +341,21 @@ func Join(ctx context.Context, dir, code string) error {
 	return join(ctx, dir, code, "")
 }
 
+// InvitationEndpoint returns the host endpoint encoded in an invitation so
+// callers can report reachability problems without confusing them with a
+// rejected or expired invitation.
+func InvitationEndpoint(code string) (string, bool, error) {
+	if len(code) > maxInput {
+		return "", false, fail()
+	}
+	b, err := base64.RawURLEncoding.DecodeString(code)
+	var inv invitation
+	if err != nil || json.Unmarshal(b, &inv) != nil || len(inv.Token) != 64 {
+		return "", false, fail()
+	}
+	return inv.Endpoint, inv.Public && inv.Reverse, nil
+}
+
 // JoinHost additionally enables a worker listener at an explicit private IP.
 func JoinHost(ctx context.Context, dir, code, host string) error {
 	if privateIP(host) == nil {
