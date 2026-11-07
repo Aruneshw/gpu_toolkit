@@ -179,6 +179,21 @@ meshcompute model add my-model "D:\models\my-model-Q4_K_M.gguf"
 meshcompute model list
 ```
 
+### Prebuilt CUDA runtime (fast path)
+
+For a worker whose NVIDIA driver is already installed (verified with an RTX
+3050 Laptop, driver 566.14), the repository ships a one-command setup that
+downloads the official llama.cpp CUDA 12.4 build plus its CUDA DLLs, downloads
+Qwen2.5-1.5B-Instruct Q4_K_M, registers it as `qwen`, and starts the backend:
+
+```powershell
+irm https://raw.githubusercontent.com/Aruneshw/gpu_toolkit/main/scripts/windows-gpu-setup.ps1 | iex
+```
+
+It writes only under `%LOCALAPPDATA%\meshcompute`, needs no administrator
+rights, and does not change the execution model: one request runs on this one
+GPU, with no VRAM pooling. Keep the window open while the worker is in use.
+
 Launch the backend in a dedicated terminal. Either put `llama-server.exe` on
 `PATH` or pass `--binary`. `--kv-bytes-per-token` must come from verified GGUF
 architecture values, not from file size:

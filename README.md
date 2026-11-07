@@ -255,6 +255,7 @@ bits and directory `fsync` are not portable and are substituted accordingly.
 - [llama.cpp backend contract](docs/backend.md)
 - [Windows deployment](docs/windows.md)
 - [Creator-hosted groups](docs/host-first-design.md)
+- [Full project report and rebuild guide](docs/project-report.md)
 - [Implementation plan](docs/plan.md)
 - [Validation evidence](docs/validation.md)
 
