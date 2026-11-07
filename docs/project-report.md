@@ -1,8 +1,8 @@
 # MeshCompute — full project report
 
 **Date:** 2026-11-07
-**Repository:** https://github.com/Aruneshw/gpu_toolkit (branch `main`, HEAD `fdcc68e` + `scripts/windows-gpu-setup.ps1`)
-**Release:** https://github.com/Aruneshw/gpu_toolkit/releases/tag/v0.2.0
+**Project:** MeshCompute (private repository; local checkout)
+**Release:** v0.2.0 (prebuilt assets distributed separately)
 **Machines:** creator Linux laptop (host) and a friend's Windows 11 laptop (worker)
 
 > This is the short overview. The complete narrative — architecture explained
@@ -366,7 +366,7 @@ immediately opens a fresh connection. It is not a connectivity failure.
 | 6 | `state=reconnecting` every 30 s | Normal one-dispatch-per-connection replenishment | No action; verify with `status` |
 | 7 | `backend_ready: false` | No llama.cpp/model installed on the worker | Run the GPU setup script |
 | 8 | Could not "control" the friend's laptop | No remote-shell/desktop channel exists; Windows has no remote access configured | Impossible by design; reduce to one pasted command |
-| 9 | Script share on `:8084` not reachable | Host firewall allows only 7443 | Served the script from GitHub raw instead |
+| 9 | Script share on `:8084` not reachable | Host firewall allows only 7443 | Served the script from an external HTTPS file host instead |
 | 10 | Multiple hosts on 8081/8082/8083 caused token/identity confusion | Three experimental groups left running | Stop unused hosts; use one `--home` per group |
 
 ### Which protocols connected and which did not
@@ -578,7 +578,8 @@ Verify on the host:
 
 ```powershell
 # one line, downloads llama.cpp CUDA + Qwen2.5 1.5B, registers, serves
-irm https://raw.githubusercontent.com/Aruneshw/gpu_toolkit/main/scripts/windows-gpu-setup.ps1 | iex
+# upload scripts/windows-gpu-setup.ps1 to your own file host, then:
+irm https://YOUR-FILE-HOST/windows-gpu-setup.ps1 | iex
 ```
 
 Manual equivalent (same effect):
@@ -792,7 +793,7 @@ curl -s -X POST https://portchecker.io/api/v1/query \
    tokens, which caused confusion about which group was live.
 5. **Bound the file server to `0.0.0.0`** (IPv4-only), so it could not serve the
    friend over IPv6; `--bind ::` was needed, and the firewall still blocked
-   8084, so GitHub raw was used instead.
+   8084, so an external HTTPS file host was used instead.
 6. **Expected port forwarding on the friend's side.** Only the host's router
    ever needs a forward; IPv6 needs none.
 7. **Treated `state=reconnecting` as an error.** It is the normal replenish
@@ -843,7 +844,8 @@ On the friend's Windows laptop, in a new PowerShell window (keep the join window
 open):
 
 ```powershell
-irm https://raw.githubusercontent.com/Aruneshw/gpu_toolkit/main/scripts/windows-gpu-setup.ps1 | iex
+# upload scripts/windows-gpu-setup.ps1 to your own file host, then:
+irm https://YOUR-FILE-HOST/windows-gpu-setup.ps1 | iex
 ```
 
 When it prints `listening on 127.0.0.1:8080`, the host will report

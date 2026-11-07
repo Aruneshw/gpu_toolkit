@@ -1,8 +1,8 @@
 # MeshCompute — the complete story, architecture, failures and rebuild guide
 
 **Version of this document:** 2026-11-07
-**Repository:** https://github.com/Aruneshw/gpu_toolkit
-**Release:** https://github.com/Aruneshw/gpu_toolkit/releases/tag/v0.2.0
+**Project:** MeshCompute (private repository; local checkout)
+**Release:** v0.2.0 (prebuilt assets distributed separately)
 **Live test machines:** creator's Linux laptop (host) + friend's Windows 11 laptop (worker)
 
 ---
@@ -731,7 +731,7 @@ Port 7443 = TCPOPEN
 Then, as a control, the same scan for port 8084 (where a helper HTTP server was
 tried) returned `TCPSTEALTH` — the host firewall allows 7443 but not arbitrary
 ports. This explained why serving the setup script from the host did not work
-and why GitHub raw was used instead.
+and why an external HTTPS file host was used instead.
 
 **The join.** A fresh invitation was generated and the friend pasted it into
 `join.cmd` on Windows. The first attempt printed:
@@ -888,7 +888,7 @@ completed and a new invitation is required — but that was not the case here.
 
 - **Symptom:** `http://[host]:8084/...` unreachable from outside.
 - **Root cause:** host firewall permits 7443 only (confirmed by `TCPSTEALTH`).
-- **Fix:** serve the script from GitHub raw (HTTPS 443), which always works.
+- **Fix:** serve the script from an external HTTPS host (port 443), which always works.
 - **Status:** resolved.
 
 ### F11. Three hosts, three dashboards, three tokens
@@ -1130,7 +1130,7 @@ Expected: version string, no network access needed.
 2. Extract it anywhere (e.g. `Downloads\meshcompute-windows-amd64`).
 3. Open PowerShell in that folder.
 
-Do **not** use the GitHub source ZIP unless you want the bootstrap that
+Do **not** use the source archive unless you want the bootstrap that
 downloads the binary.
 
 ### 8.2 Phase 2 — start the group host (IPv6 path)
@@ -1267,7 +1267,8 @@ timestamp seconds old.
 One line, in a **second** PowerShell window:
 
 ```powershell
-irm https://raw.githubusercontent.com/Aruneshw/gpu_toolkit/main/scripts/windows-gpu-setup.ps1 | iex
+# upload scripts/windows-gpu-setup.ps1 to your own file host, then:
+irm https://YOUR-FILE-HOST/windows-gpu-setup.ps1 | iex
 ```
 
 It performs, in order:
@@ -1817,7 +1818,8 @@ Permissions: the directory is 0700; identity files are 0600. This is why exFAT
 2. In a second PowerShell window, install the backend:
 
 ```powershell
-irm https://raw.githubusercontent.com/Aruneshw/gpu_toolkit/main/scripts/windows-gpu-setup.ps1 | iex
+# upload scripts/windows-gpu-setup.ps1 to your own file host, then:
+irm https://YOUR-FILE-HOST/windows-gpu-setup.ps1 | iex
 ```
 
 3. On the host, confirm:
