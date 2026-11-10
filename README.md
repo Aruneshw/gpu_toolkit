@@ -42,6 +42,25 @@ single-node inference, not tensor splitting.
 
 ## Install
 
+### Easiest: one script with a menu
+
+Download the package for your system from
+[Releases](https://github.com/Aruneshw/gpu_toolkit/releases/latest) and extract it.
+
+| | Linux | Windows |
+| --- | --- | --- |
+| Start the menu | `./linux.sh` | double-click `windows.cmd` |
+| Host a group (creates the invitation key, opens the dashboard) | `./linux.sh host` | menu option 3 |
+| Join with a friend's key | `./linux.sh join <KEY>` | `.\join.cmd <KEY>` or menu option 1 |
+| Reconnect after closing the window | `./linux.sh reconnect` | menu option 2 |
+| Another key for your running group | `./linux.sh invite` | menu option 4 |
+
+The menus install MeshCompute when needed (bundled binary, or the latest
+release with its SHA-256 checked), generate keys automatically, and open the
+dashboard in your browser. Pasting the whole command a friend sent also works:
+the key is always the last word. The source checkout includes the same
+`linux.sh` and `windows.cmd`.
+
 ### Ready-to-run packages and creator-hosted groups
 
 Download the Windows ZIP or Linux tarball from
@@ -191,6 +210,19 @@ selected node to advertise exactly the requested model and enough context. It
 never falls back silently after generation starts. `simulate` prints clearly
 labeled synthetic scheduling examples and performs no inference.
 
+## Dashboard features
+
+- **Invite a friend:** choose an expiry (30 minutes to 24 hours) and click
+  *Generate invitation*. The panel shows the exact one-line command your friend
+  pastes (Windows first install, Windows already installed, Linux) with copy
+  buttons and a live countdown. The key pair is generated automatically on the
+  friend's computer during `join`; nobody types keys by hand.
+- **Terminal:** a real shell (xterm.js on a Linux pseudo-terminal: colours,
+  Ctrl-C, tab completion, `vim`, `htop`, resizing). It survives page reloads,
+  has `meshcompute` on PATH with this group's `MESHCOMPUTE_HOME`, and has quick
+  buttons for *New invitation*, *Status*, *Models*, *Doctor* and `nvidia-smi`.
+  It runs on the dashboard's own computer only. Linux hosts only.
+
 ## Dashboard scope
 
 `meshcompute ui` is a control panel, not a distributed GPU runtime:
@@ -238,8 +270,9 @@ Read [docs/security.md](docs/security.md) before deployment. Key points:
   administrative routes and no HTTP enrollment fallback.
 - The dashboard binds `127.0.0.1` only, requires a 256-bit token, rejects
   non-loopback Host headers and cross-origin POSTs, and sets a strict CSP. It
-  can only read telemetry and request inference; it cannot enroll, revoke,
-  change configuration, or reach a shell.
+  reads telemetry, requests inference, issues invitations (group host only),
+  and opens a terminal on the local computer as the local user. Treat the
+  dashboard URL/token like a password: it grants that shell.
 - No certificate rotation, CRL/OCSP, HA consensus, rate limiting, or audit log
   shipping is built in. Those remain deployment responsibilities.
 - Treat GGUF files and backend binaries as untrusted inputs. Never expose

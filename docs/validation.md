@@ -204,3 +204,43 @@ visible but not used for inference.
 - A physical two-machine VPN deployment, firewall behavior, or WAN reliability.
 - macOS, AMD, or Intel GPU targets.
 - Any distributed/model-parallel inference. RPC remains disabled and unclaimed.
+
+## 2026-11-10: address moves, re-join, dashboard invitations and terminal
+
+Executed on the Linux development laptop (Parrot, RTX 3050 6 GB):
+
+- `go test ./...`, `go test -race ./...`, `make verify` (gofmt, vet, Linux
+  amd64/arm64 and Windows cross-builds, offline build): all pass.
+- New tests: `TestHostAddressChangeAndRejoin` (host moves to a new IP, old pin
+  and old invitations rejected, worker re-joins with backup and reconnects),
+  `TestShellRoundTrip`/`TestCloseKillsShellAndLimits`/`TestScrollbackOffsets`
+  (real PTY), `TestInviteAPI`, `TestStaticAndInfo`, `TestTerminalOverHTTP`.
+- Live run with real processes: group created on `127.0.0.1`, worker joined,
+  host restarted with `--auto` and moved itself to the laptop's current global
+  IPv6 (NOTICE printed instead of the old "use a new --home" failure). The old
+  worker printed "cannot reach the group host". An invitation generated via
+  `POST /api/invite` was used with `join <CODE>`: the old identity was backed
+  up, the worker connected, and the dashboard showed 2/2 nodes, 2 GPUs,
+  12.0 GiB VRAM. Reusing the invitation failed with an explicit
+  "ask for a NEW invitation" message. Restarting the host kept the address and
+  the worker reconnected by itself.
+- Headless Chrome against the live dashboard: invite panel and countdown,
+  copy-ready commands, xterm terminal with the user's bash prompt,
+  `TERM=xterm-256color`, colour output, Ctrl-C (exit 130), the *Status* quick
+  button, session restored with scrollback after a page reload, and no console
+  errors.
+
+Not verified here: the PowerShell installer changes (`join.cmd <CODE>`,
+bundled-binary upgrade, replacing an older `.previous` backup) were not run on
+real Windows, and a second physical computer on another network was not used.
+
+### Launcher scripts (2026-11-10)
+
+- `linux.sh` was run from an extracted `dist` tarball: the menu's *Host a group*
+  resumed the group on the live IPv6, printed the invitation and asked the
+  desktop to open the dashboard (`--open`, via a recording `xdg-open`). *New
+  invitation* printed copy-ready Windows/Linux commands. *Join a group* with a
+  pasted whole `.\join.cmd <KEY>` line enrolled and connected; *Reconnect*
+  reconnected; unknown options and a missing identity gave clear errors.
+- `windows.cmd` / `installers/menu-windows.ps1` were reviewed but **not
+  executed**: no Windows or PowerShell runtime was available here.

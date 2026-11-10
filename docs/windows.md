@@ -4,7 +4,9 @@
 
 Download and extract the Windows ZIP from
 [Releases](https://github.com/Aruneshw/gpu_toolkit/releases), then open regular
-PowerShell in that folder and run:
+PowerShell in that folder and run (the host's dashboard *Invite a friend* panel
+gives the exact line with the invitation already included, e.g.
+`.\join.cmd <INVITATION>`):
 
 ```powershell
 .\join.cmd

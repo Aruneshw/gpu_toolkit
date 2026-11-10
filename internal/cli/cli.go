@@ -2,19 +2,16 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"meshcompute/internal/agent"
 	"meshcompute/internal/config"
 	"meshcompute/internal/security"
 	"net"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -23,16 +20,17 @@ Usage: meshcompute [--home DIR] COMMAND
   install                         initialize user configuration (no downloads)
   config set KEY VALUE            listen | backend_url (before cluster creation)
   cluster create                  create private CA and coordinator identity
-  host [--auto|--listen IP:7443] [--public] [--advertise https://IP:7443]
+  host [--auto|--listen IP:7443] [--public] [--advertise https://IP:7443] [--open]
                                   create/resume a group, show invite and dashboard
   pair [--ttl 5m]                 issue a secret, one-use invitation
-  join [CODE|--stdin]             paste invite; interactive join starts the worker
+  join [CODE|--stdin] [--no-start] enroll with an invite (replaces an old worker
+                                  identity, kept as a backup) and start the worker
   revoke NODE_ID                  revoke an enrolled node on coordinator
   peer add NAME HTTPS_ENDPOINT    remember an explicitly enrolled worker
   start                           run the HTTPS agent in the foreground
   status                          local and configured peer resources
   monitor [--interval 5s]          periodically show status until Ctrl-C
-  ui [--listen 127.0.0.1:8081]     token-protected localhost dashboard
+  ui [--listen 127.0.0.1:8081] [--open]  token-protected localhost dashboard
   doctor                          shareable redacted diagnostics
   backend list                    detect local llama.cpp backend
   backend serve NAME [options]    launch a registered local GGUF
@@ -50,6 +48,7 @@ func writeJSON(w io.Writer, v any) error {
 	e.SetIndent("", "  ")
 	return e.Encode(v)
 }
+
 // joinFailure separates "the host is unreachable" from "the invitation was
 // refused" so users are not told to check the wrong thing.
 func joinFailure(code string, cause error) error {
@@ -67,7 +66,7 @@ func joinFailure(code string, cause error) error {
 		return fmt.Errorf("join failed: cannot reach the group host at %s\n  the host must be running, the address must be current, and TCP must be allowed through its firewall and router\n  caused by: %v", u.Host, dialErr)
 	}
 	conn.Close()
-	return fmt.Errorf("join failed: the host at %s was reachable but refused enrollment\n  the invitation is probably expired or already used; generate a new one on the host with: meshcompute pair\n  caused by: %w", u.Host, cause)
+	return fmt.Errorf("join failed: the host at %s was reachable but refused enrollment\n  the invitation is expired, already used, or was created before the host's address changed\n  ask the host for a NEW invitation (dashboard: Invite a friend, or: meshcompute pair --ttl 1h)\n  caused by: %w", u.Host, cause)
 }
 
 func flags(name string, args []string, setup func(*flag.FlagSet)) error {
@@ -175,57 +174,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out io.Writer, versio
 		_, e = fmt.Fprintln(out, code)
 		return e
 	case "join":
-		if len(args) > 1 {
-			return errors.New("usage: join [CODE|--stdin]")
-		}
-		interactive := len(args) == 0
-		if interactive {
-			if isHost, reverse, _, err := security.Group(dir); err == nil && reverse && !isHost {
-				fmt.Fprintln(out, "Resuming this worker's group connection. Press Ctrl-C to stop.")
-				return agent.New(dir, c, out).Serve(ctx)
-			}
-		}
-		code := ""
-		if interactive {
-			fmt.Fprintln(out, "Paste the private invitation and press Enter:")
-			line, err := bufio.NewReader(io.LimitReader(in, 32769)).ReadString('\n')
-			if err != nil && err != io.EOF {
-				return err
-			}
-			if len(line) > 32768 {
-				return errors.New("invitation too large")
-			}
-			code = strings.TrimSpace(line)
-		} else {
-			code = args[0]
-		}
-		if code == "--stdin" {
-			b, e := io.ReadAll(io.LimitReader(in, 32769))
-			if e != nil {
-				return e
-			}
-			if len(b) > 32768 {
-				return errors.New("invitation too large")
-			}
-			code = strings.TrimSpace(string(b))
-		}
-		host, _, _ := net.SplitHostPort(c.Listen)
-		if e := security.JoinHost(ctx, dir, code, host); e != nil {
-			return joinFailure(code, e)
-		}
-		_, reverse, _, e := security.Group(dir)
-		if e != nil {
-			return e
-		}
-		if reverse {
-			fmt.Fprintln(out, "Joined the group. Worker connections are outbound and reconnect automatically. Restart with meshcompute start.")
-			if interactive {
-				return agent.New(dir, c, out).Serve(ctx)
-			}
-			return nil
-		}
-		_, e = fmt.Fprintln(out, "Enrolled. Start this worker and add its VPN endpoint on the coordinator with peer add.")
-		return e
+		return joinGroup(ctx, dir, c, args, in, out)
 	case "revoke":
 		if len(args) != 1 {
 			return errors.New("usage: revoke NODE_ID")

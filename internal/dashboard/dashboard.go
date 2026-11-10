@@ -22,6 +22,7 @@ import (
 	"meshcompute/internal/network"
 	"meshcompute/internal/security"
 	"meshcompute/internal/sse"
+	"meshcompute/internal/terminal"
 	"net"
 	"net/http"
 	"net/url"
@@ -31,7 +32,7 @@ import (
 	"time"
 )
 
-//go:embed index.html
+//go:embed index.html static
 var assets embed.FS
 
 const (
@@ -328,6 +329,9 @@ type Server struct {
 	token          string
 	allowedOrigins map[string]bool
 	handler        http.Handler
+	inviter        Inviter
+	term           *terminal.Manager
+	cli            string
 }
 
 func New(cluster Cluster, listen, token string) (*Server, error) {
@@ -353,7 +357,10 @@ func New(cluster Cluster, listen, token string) (*Server, error) {
 	} else if !validToken(token) {
 		return nil, errors.New("dashboard token must be 64 hexadecimal characters")
 	}
-	s := &Server{cluster: cluster, listen: listen, port: port, token: token}
+	s := &Server{cluster: cluster, listen: listen, port: port, token: token, cli: "meshcompute"}
+	if inv, ok := cluster.(Inviter); ok {
+		s.inviter = inv
+	}
 	s.allowedOrigins = map[string]bool{
 		"http://127.0.0.1:" + port: true,
 		"http://localhost:" + port: true,
@@ -413,7 +420,7 @@ func securityHeaders(w http.ResponseWriter) {
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-	h.Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+	h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 }
 
 func (s *Server) guard(next http.Handler) http.Handler {
@@ -478,6 +485,7 @@ func (s *Server) routes() http.Handler {
 		writeJSON(w, StatusResponse{Nodes: nodes, Aggregate: aggregate(nodes), Scope: scopeNote})
 	})
 	mux.HandleFunc("/api/run", s.handleRun)
+	s.toolRoutes(mux)
 	return mux
 }
 
@@ -552,6 +560,9 @@ func (s *Server) Serve(ctx context.Context) error {
 		ReadTimeout:       15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16384,
+	}
+	if s.term != nil {
+		defer s.term.CloseAll()
 	}
 	done := make(chan struct{})
 	defer close(done)

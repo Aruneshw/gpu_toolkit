@@ -6,6 +6,10 @@ There is no shared MeshCompute server, central relay, or VPN dependency.
 
 ## Quick start
 
+Shortest path: **Linux** `./linux.sh` (choose 1 to host, 2 to join),
+**Windows** double-click `windows.cmd` (1 = join, 3 = host). The manual
+commands below are what those menus run.
+
 Download a package from [Releases](https://github.com/Aruneshw/gpu_toolkit/releases).
 The Windows ZIP includes the executable; the Linux tarball contains `meshcompute`.
 
@@ -49,7 +53,10 @@ This installs the bundled executable (or downloads the official release when
 using the source ZIP), verifies its checksum, and prompts for the invitation.
 Paste it and press Enter. No Git, Go, permanent execution-policy change, or
 separate networking tool is required. The worker stays in the foreground.
-Use the same command again to reconnect an already-enrolled worker.
+Use the same command again to reconnect an already-enrolled worker: press
+Enter to reconnect, or paste a NEW invitation to switch to a new or moved group.
+The invitation can also be passed directly, which is what the dashboard's
+*Invite a friend* panel generates: `.\join.cmd <INVITATION>`.
 
 **Friend, Linux:** extract the tarball and run:
 
@@ -59,7 +66,10 @@ Use the same command again to reconnect an already-enrolled worker.
 
 After enrollment, `meshcompute start` also resumes the worker. Use separate
 `--home` directories for different groups or for an existing legacy cluster.
-Existing identities are never overwritten by `host` or `join`.
+`join` with a new invitation replaces an existing **worker** identity only after
+the new enrollment succeeds, keeping the old one as
+`identity.json.bak-<timestamp>`. A group host or coordinator identity is never
+replaced by `join`.
 
 Workers appear automatically in the creator's dashboard under their certificate
 IDs (`worker-...`), without `peer add` or knowing a worker's IP address. The
@@ -90,8 +100,13 @@ reports "cannot reach the group host" separately from "the host was reachable
 but refused enrollment" (expired or reused invitation).
 For two processes on one machine, use loopback and omit `--public`.
 
-`listen` and `advertise` addresses are certified. To change them, create a new
-group in another `--home` and re-enroll workers. Reserve the address where possible.
+`listen` and `advertise` addresses are certified. Home and mobile IPv6 prefixes
+change often, so `host` handles this automatically: if the saved address is
+still on this computer it is reused; otherwise `host --auto` picks the new one,
+re-issues the host certificate with the **same group CA** (revocations are
+kept), discards old invitations, and prints a NOTICE. Workers that joined
+before are pinned to the old certificate; their window says it cannot reach the
+host, and they run `join` again with a new invitation from the dashboard.
 
 ## Implemented architecture
 

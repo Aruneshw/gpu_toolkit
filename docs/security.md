@@ -89,9 +89,16 @@ for every agent call. It exposes only `GET /`, `GET /api/status` and
   `nosniff`, `DENY` framing and no-referrer. Request bodies and streams are
   bounded. The run proxy has a 30-minute hard stream limit and per-write
   deadlines; it never retries or changes placement.
-- The dashboard can read aggregate telemetry and request inference on an
-  existing node. It cannot enroll, revoke, change configuration, read model
-  files, or run commands. It is not a sandbox against the same OS user,
+- The dashboard can read aggregate telemetry, request inference on an existing
+  node, issue single-use invitations (group hosts only, same as `pair`), and
+  open a terminal on **this computer** (Linux hosts). The terminal is a normal
+  shell running as the local user who started the dashboard, so anyone holding
+  the dashboard token has that user's shell: never share the dashboard URL or
+  token. Shells exist only on the dashboard's own machine; enrolled workers
+  and the group host cannot open shells on each other, and nothing is exposed
+  beyond loopback. Shells end when the dashboard stops, when closed, or after
+  30 idle minutes with no browser attached (at most 8). It cannot revoke or
+  change configuration through HTTP. It is not a sandbox against the same OS user,
   malicious browser extensions, or a process that can read the launch terminal;
   localhost is not an authorization boundary by itself.
 

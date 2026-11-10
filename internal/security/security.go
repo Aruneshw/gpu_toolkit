@@ -250,22 +250,92 @@ func initIdentity(dir, host, advertised string, public, reverse bool) error {
 	if err != nil {
 		return fail()
 	}
+	id := "coordinator-" + opaque()
+	der, nodeKey, err := coordinatorLeaf(ca, key, id, ip, advertised, host)
+	if err != nil {
+		return err
+	}
+	return save(dir, state{ID: id, Coordinator: true, CA: certPEM(caDER), CAKey: keyPEM(key), Cert: certPEM(der), Key: keyPEM(nodeKey), Pin: digest(der), Tokens: map[string]time.Time{}, Revoked: map[string]bool{}, Public: public, Reverse: reverse})
+}
+
+// coordinatorLeaf issues the coordinator's TLS certificate for its literal
+// listen IP and, when different, its advertised IP.
+func coordinatorLeaf(ca *x509.Certificate, caKey any, id string, ip net.IP, advertised, host string) ([]byte, ed25519.PrivateKey, error) {
 	nodePub, nodeKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return fail()
+		return nil, nil, fail()
 	}
-	id := "coordinator-" + opaque()
 	leaf := template(id)
 	leaf.IPAddresses = []net.IP{ip}
 	if advertised != "" && advertised != host {
-		leaf.IPAddresses = append(leaf.IPAddresses, net.ParseIP(advertised))
+		adv := net.ParseIP(advertised)
+		if adv == nil {
+			return nil, nil, errors.New("advertised host must be a literal IP")
+		}
+		leaf.IPAddresses = append(leaf.IPAddresses, adv)
 	}
 	leaf.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
-	der, err := x509.CreateCertificate(rand.Reader, leaf, ca, nodePub, key)
+	der, err := x509.CreateCertificate(rand.Reader, leaf, ca, nodePub, caKey)
+	if err != nil {
+		return nil, nil, fail()
+	}
+	return der, nodeKey, nil
+}
+
+// RetargetGroup moves an existing creator-hosted group to a new address. Home
+// and mobile IPv6 prefixes change often; refusing to start would strand the
+// group. The CA, coordinator ID and revocations are kept, a new coordinator
+// certificate is issued for the new address, and outstanding invitations are
+// discarded because they pin the old certificate. Previously enrolled workers
+// must join again with a fresh invitation.
+func RetargetGroup(dir, listen, advertise string, public bool) error {
+	if err := config.RemoteEndpoint("https://"+listen, public); err != nil {
+		return err
+	}
+	if err := config.RemoteEndpoint(advertise, public); err != nil {
+		return err
+	}
+	host, _, _ := net.SplitHostPort(listen)
+	u, _ := url.Parse(advertise)
+	ip := privateIP(host)
+	if public {
+		ip = net.ParseIP(host)
+	}
+	if ip == nil {
+		return errors.New("host must be a permitted literal IP")
+	}
+	unlock, err := lock(dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	s, err := load(dir)
+	if err != nil {
+		return err
+	}
+	if !s.Coordinator || !s.Reverse {
+		return errors.New("only a group host identity can change address")
+	}
+	ca, err := parseCert(s.CA)
+	if err != nil {
+		return err
+	}
+	block, _ := pem.Decode(s.CAKey)
+	if block == nil {
+		return fail()
+	}
+	caKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
 		return fail()
 	}
-	return save(dir, state{ID: id, Coordinator: true, CA: certPEM(caDER), CAKey: keyPEM(key), Cert: certPEM(der), Key: keyPEM(nodeKey), Pin: digest(der), Tokens: map[string]time.Time{}, Revoked: map[string]bool{}, Public: public, Reverse: reverse})
+	der, nodeKey, err := coordinatorLeaf(ca, caKey, s.ID, ip, u.Hostname(), host)
+	if err != nil {
+		return err
+	}
+	s.Cert, s.Key, s.Pin = certPEM(der), keyPEM(nodeKey), digest(der)
+	s.Tokens = map[string]time.Time{}
+	s.Public = public
+	return save(dir, s)
 }
 
 // Pair issues a single-use invitation through local coordinator state only.
@@ -338,7 +408,8 @@ func transport(ca []byte, pin string, cert *tls.Certificate) (*http.Client, erro
 
 // Join enrolls with the exact coordinator pinned in an out-of-band invitation.
 func Join(ctx context.Context, dir, code string) error {
-	return join(ctx, dir, code, "")
+	_, err := join(ctx, dir, code, "", false)
+	return err
 }
 
 // InvitationEndpoint returns the host endpoint encoded in an invitation so
@@ -361,17 +432,44 @@ func JoinHost(ctx context.Context, dir, code, host string) error {
 	if privateIP(host) == nil {
 		return errors.New("host must be a private or loopback IP")
 	}
-	return join(ctx, dir, code, host)
+	_, err := join(ctx, dir, code, host, false)
+	return err
 }
 
-func join(ctx context.Context, dir, code, host string) error {
+// RejoinHost enrolls with a new invitation even when this directory already
+// holds a worker identity, for example after the group host's address changed.
+// The previous identity is kept as identity.json.bak-TIMESTAMP and is only
+// moved after the new enrollment succeeds. A coordinator identity is never
+// replaced. It returns the backup path, or "" when nothing was replaced.
+func RejoinHost(ctx context.Context, dir, code, host string) (string, error) {
+	if privateIP(host) == nil {
+		return "", errors.New("host must be a private or loopback IP")
+	}
+	return join(ctx, dir, code, host, true)
+}
+
+// HostEndpoint returns the group host a worker identity connects to.
+func HostEndpoint(dir string) (string, error) {
+	s, err := load(dir)
+	if err != nil {
+		return "", err
+	}
+	return s.HostEndpoint, nil
+}
+
+func join(ctx context.Context, dir, code, host string, replace bool) (backup string, err error) {
+	err = joinLocked(ctx, dir, code, host, replace, &backup)
+	return backup, err
+}
+
+func joinLocked(ctx context.Context, dir, code, host string, replace bool, backup *string) error {
 	if len(code) > maxInput {
 		return fail()
 	}
 	b, err := base64.RawURLEncoding.DecodeString(code)
 	var inv invitation
 	if err != nil || json.Unmarshal(b, &inv) != nil || len(inv.Token) != 64 {
-		return fail()
+		return errors.New("the invitation is malformed or truncated; paste the whole code")
 	}
 	err = config.RemoteEndpoint(inv.Endpoint, inv.Public && inv.Reverse)
 	if err != nil {
@@ -383,8 +481,18 @@ func join(ctx context.Context, dir, code, host string) error {
 		return err
 	}
 	defer unlock()
-	if !absent(dir) {
-		return errors.New("identity already exists")
+	existing := !absent(dir)
+	if existing {
+		if !replace {
+			return errors.New("identity already exists")
+		}
+		old, err := load(dir)
+		if err != nil {
+			return err
+		}
+		if old.Coordinator {
+			return errors.New("this directory holds a group host or coordinator identity; join from a separate --home")
+		}
 	}
 	client, err := transport(inv.CA, inv.Pin, nil)
 	if err != nil {
@@ -411,11 +519,11 @@ func join(ctx context.Context, dir, code, host string) error {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return fail()
+		return errors.New("could not complete a pinned TLS connection to the group host")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fail()
+		return errors.New("the group host refused this invitation")
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxInput+1))
 	var cred credential
@@ -437,6 +545,13 @@ func join(ctx context.Context, dir, code, host string) error {
 	}
 	if host != "" && c.VerifyHostname(host) != nil {
 		return fail()
+	}
+	if existing {
+		*backup = filepath.Join(dir, "identity.json.bak-"+time.Now().UTC().Format("20060102-150405"))
+		if err := os.Rename(filepath.Join(dir, "identity.json"), *backup); err != nil {
+			*backup = ""
+			return fail()
+		}
 	}
 	return save(dir, state{ID: cred.ID, CA: inv.CA, Cert: cred.Cert, Key: keyPEM(key), Pin: inv.Pin, Public: inv.Public && inv.Reverse, Reverse: inv.Reverse, HostEndpoint: inv.Endpoint})
 }

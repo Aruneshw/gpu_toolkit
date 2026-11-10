@@ -112,6 +112,12 @@ func (c *bufferedConn) Close() error               { err := c.Conn.Close(); c.cl
 // upgrade and the server have bounded headers and deadlines. handler receives
 // the host's verified TLS identity, never a synthetic worker-supplied identity.
 func ServeWorker(ctx context.Context, endpoint string, cfg *tls.Config, handler http.Handler) error {
+	return ServeWorkerNotify(ctx, endpoint, cfg, handler, nil)
+}
+
+// ServeWorkerNotify is ServeWorker with a callback invoked once the host has
+// accepted the reverse connection (before any request is served).
+func ServeWorkerNotify(ctx context.Context, endpoint string, cfg *tls.Config, handler http.Handler, accepted func()) error {
 	u, err := url.Parse(endpoint)
 	if err != nil {
 		return err
@@ -147,6 +153,9 @@ func ServeWorker(ctx context.Context, endpoint string, cfg *tls.Config, handler 
 		return errors.New("group host rejected reverse connection")
 	}
 	limited.N = 1<<63 - 1
+	if accepted != nil {
+		accepted()
+	}
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		return err
 	}

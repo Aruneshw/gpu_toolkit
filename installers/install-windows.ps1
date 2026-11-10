@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$Join, [switch]$AllowElevated)
+param([switch]$Join, [switch]$AllowElevated, [Parameter(Position = 0)][string]$Code)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ($env:OS -ne 'Windows_NT') { throw 'This installer requires Windows.' }
@@ -8,11 +8,16 @@ $installed = Join-Path $env:LOCALAPPDATA 'meshcompute\bin\meshcompute.exe'
 $root = Split-Path $PSScriptRoot -Parent
 $bundle = Join-Path $root 'meshcompute-windows-amd64.exe'
 $bundled = Test-Path -LiteralPath $bundle
-# join.cmd is also the restart path for already-enrolled workers. Installation
-# and updates remain explicit when a binary is already installed.
-if ($Join -and (Test-Path -LiteralPath $installed)) {
-    & $installed join
+function Invoke-Join {
+    if ($Code) { & $installed join $Code.Trim() } else { & $installed join }
     exit $LASTEXITCODE
+}
+# join.cmd is also the restart path for already-enrolled workers. With the
+# release ZIP, the bundled (newer) executable is installed first; the installer
+# returns immediately when it is already the installed version. With the
+# source ZIP and an existing installation, no network access is needed.
+if ($Join -and (Test-Path -LiteralPath $installed) -and -not $bundled) {
+    Invoke-Join
 }
 
 # Download only the project's latest published release, not an arbitrary URL.
@@ -47,4 +52,4 @@ if (@($userPath -split ';' | Where-Object { $_.TrimEnd('\') -eq $binDir.TrimEnd(
     [Environment]::SetEnvironmentVariable('Path', (($userPath, $binDir | Where-Object { $_ }) -join ';'), 'User')
 }
 Write-Output 'Installed. Use .\join.cmd now, or meshcompute join in a new terminal.'
-if ($Join) { & $installed join; exit $LASTEXITCODE }
+if ($Join) { Invoke-Join }

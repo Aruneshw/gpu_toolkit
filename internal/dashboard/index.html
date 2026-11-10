@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MeshCompute dashboard</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/xterm.css">
 <style>
   :root {
     color-scheme: dark;
@@ -141,6 +143,25 @@
   }
   pre#output.streaming::after { content: "\2588"; color: var(--accent); animation: blink 1s steps(1) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
+  .invite-body { padding: 1rem; display: grid; gap: .8rem; }
+  .invite-row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+  .invite-row select { width: auto; }
+  .hint { color: var(--muted); font-size: .82rem; }
+  .hint b { color: var(--text); font-weight: 600; }
+  .warn { color: var(--warn); }
+  .cmd { border: 1px solid var(--line); border-radius: 6px; background: #0b1016; }
+  .cmd-head { display: flex; justify-content: space-between; align-items: center; gap: .6rem; padding: .4rem .6rem; border-bottom: 1px solid var(--line); color: var(--muted); font-size: .76rem; }
+  .cmd code { display: block; padding: .55rem .7rem; font: .78rem/1.45 var(--mono); color: #d7e2ee; word-break: break-all; max-height: 7.5rem; overflow: auto; }
+  button.copy { padding: .2rem .55rem; font-size: .72rem; }
+  .steps { margin: 0; padding-left: 1.2rem; color: var(--muted); font-size: .84rem; }
+  .steps li { margin: .15rem 0; }
+  .steps a { color: var(--accent); }
+  .term-bar { display: flex; gap: .4rem; flex-wrap: wrap; padding: .6rem 1rem; border-bottom: 1px solid var(--line); align-items: center; }
+  .term-bar button { padding: .3rem .6rem; font-size: .76rem; }
+  #term { height: 380px; padding: .4rem .2rem .4rem .6rem; background: #0b1016; }
+  #term .xterm-viewport { background: #0b1016 !important; }
+  .term-panel.max { position: fixed; inset: 0; z-index: 50; margin: 0; border-radius: 0; display: flex; flex-direction: column; }
+  .term-panel.max #term { flex: 1; height: auto; }
   .footer { color: var(--muted); font-size: .78rem; text-align: center; margin-top: 1.5rem; }
   @media (max-width: 640px) {
     header { padding: 1rem; }
@@ -170,6 +191,28 @@
     <div class="card"><div class="label">VRAM free</div><div class="value" id="statFree">—</div><div class="sub">sum of free memory</div></div>
     <div class="card"><div class="label">RAM available</div><div class="value" id="statRAM">—</div><div class="sub" id="statRAMSub">—</div></div>
     <div class="card"><div class="label">Models</div><div class="value" id="statModels">—</div><div class="sub">registered on backends</div></div>
+  </section>
+
+  <section class="panel" id="invitePanel" hidden>
+    <div class="panel-head"><h2>Invite a friend</h2><span class="note" id="hostAddr"></span></div>
+    <div class="invite-body">
+      <div class="hint" id="reach"></div>
+      <div class="invite-row">
+        <label style="display:flex;align-items:center;gap:.4rem">Expires in
+          <select id="ttl"><option value="30">30 minutes</option><option value="60" selected>1 hour</option><option value="360">6 hours</option><option value="1440">24 hours</option></select>
+        </label>
+        <button id="invite" type="button">Generate invitation</button>
+        <span class="status-text" id="inviteState"></span>
+      </div>
+      <div id="inviteOut" hidden>
+        <ol class="steps">
+          <li>Your friend downloads <a id="dl" target="_blank" rel="noopener noreferrer">the latest release</a> (Windows ZIP or Linux tarball) and extracts it.</li>
+          <li>They paste <b>one</b> of the commands below. It installs, enrolls a new key automatically, and connects their GPU here.</li>
+          <li>Each invitation works <b>once</b>. Make a new one per friend, or if it expires. Send it privately.</li>
+        </ol>
+        <div id="cmds" style="display:grid;gap:.6rem;margin-top:.7rem"></div>
+      </div>
+    </div>
   </section>
 
   <section class="panel">
@@ -211,8 +254,25 @@
     <pre id="output" aria-live="polite"></pre>
   </section>
 
-  <div class="footer">Every request is dispatched to exactly one node. No unified VRAM pool, no model splitting.</div>
+  <section class="panel term-panel" id="termPanel" hidden>
+    <div class="panel-head"><h2>Terminal</h2><span class="note" id="termState">this computer · your user account</span></div>
+    <div class="term-bar" id="quick">
+      <button type="button" data-cmd="pair --ttl 1h">New invitation</button>
+      <button type="button" data-cmd="status">Status</button>
+      <button type="button" data-cmd="model list">Models</button>
+      <button type="button" data-cmd="doctor">Doctor</button>
+      <button type="button" data-raw="nvidia-smi">nvidia-smi</button>
+      <span style="flex:1"></span>
+      <button type="button" class="secondary" id="termMax">Maximize</button>
+      <button type="button" class="secondary" id="termNew">Restart shell</button>
+    </div>
+    <div id="term"></div>
+  </section>
+
+  <div class="footer">Totals show every connected laptop's GPUs together. Each inference request runs on one selected node (models are not split across laptops).</div>
 </main>
+<script src="/static/xterm.js"></script>
+<script src="/static/xterm-addon-fit.js"></script>
 <script>
 (function () {
   "use strict";
@@ -289,6 +349,12 @@
     setText("gpuNote", rows.length + (rows.length === 1 ? " GPU visible" : " GPUs visible"));
   }
 
+  function friendlyError(name, err) {
+    if (/HTTP 503/.test(err) && name.indexOf("worker-") === 0) return "offline: the friend's MeshCompute window is closed or their laptop is asleep. They re-run join.cmd (press Enter) to reconnect.";
+    if (/unreachable|authentication/.test(err) && name === "local") return "local agent not running";
+    return err;
+  }
+
   function renderNodes(data) {
     var rows = data.nodes.map(function (node) {
       var status = node.status || {};
@@ -298,7 +364,8 @@
       var backendState = status.backend_ready ? "ready" : "not ready";
       var last = status.last_outcome || "—";
       if (status.tokens_per_second) last += " · " + status.tokens_per_second.toFixed(1) + " tok/s";
-      if (node.error) last = node.error;
+      if (node.error) last = friendlyError(node.name, node.error);
+      else if (node.healthy && !status.backend_ready && node.name !== "local") last = "connected · no model loaded (run llama.cpp backend on that laptop)";
       return "<tr><td>" + esc(node.name) + "</td><td>" + state + "</td><td>" + backendState +
         " <span style=\"color:var(--muted)\">" + (backend.context ? "ctx " + esc(backend.context) : "") + "</span></td>" +
         "<td>" + esc(models || "—") + "</td><td>" + (status.busy ? "busy" : "idle") + "</td><td>" + esc(last) + "</td></tr>";
@@ -451,12 +518,187 @@
     }
   }
 
+  // ---------- invitations ----------
+  function copyText(text, button) {
+    var done = function () { var t = button.textContent; button.textContent = "Copied"; setTimeout(function () { button.textContent = t; }, 1200); };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text); done(); });
+    else { fallbackCopy(text); done(); }
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); } catch (_) {}
+    document.body.removeChild(ta);
+  }
+  function cmdBlock(label, command) {
+    var box = document.createElement("div"); box.className = "cmd";
+    var head = document.createElement("div"); head.className = "cmd-head";
+    var span = document.createElement("span"); span.textContent = label;
+    var btn = document.createElement("button"); btn.type = "button"; btn.className = "copy"; btn.textContent = "Copy";
+    btn.addEventListener("click", function () { copyText(command, btn); });
+    var code = document.createElement("code"); code.textContent = command;
+    head.appendChild(span); head.appendChild(btn); box.appendChild(head); box.appendChild(code);
+    return box;
+  }
+  var expiryTimer = null;
+  async function makeInvite() {
+    var button = $("invite");
+    button.disabled = true;
+    setText("inviteState", "generating…");
+    try {
+      var res = await fetch("/api/invite", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ttl_minutes: Number($("ttl").value) }) });
+      var body = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
+      var cmds = $("cmds"); cmds.textContent = "";
+      body.commands.forEach(function (c) { cmds.appendChild(cmdBlock(c.label, c.command)); });
+      cmds.appendChild(cmdBlock("Invitation code only (paste when join.cmd asks for it)", body.code));
+      $("dl").href = body.download; $("dl").textContent = "the latest release";
+      $("inviteOut").hidden = false;
+      var expires = new Date(body.expires_at).getTime();
+      clearInterval(expiryTimer);
+      var tick = function () {
+        var left = Math.max(0, Math.round((expires - Date.now()) / 1000));
+        if (!left) { setText("inviteState", "expired · generate a new one"); $("inviteState").className = "status-text warn"; clearInterval(expiryTimer); return; }
+        $("inviteState").className = "status-text";
+        setText("inviteState", "single use · expires in " + Math.floor(left / 60) + "m " + (left % 60) + "s");
+      };
+      tick(); expiryTimer = setInterval(tick, 1000);
+    } catch (err) {
+      setText("inviteState", "failed: " + err.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  // ---------- terminal ----------
+  var term = null, fit = null, termId = null, termOffset = -1, termAbort = null, inputQueue = "", inputBusy = false;
+  function post(url, body) {
+    return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  }
+  function b64bytes(b64) {
+    var bin = atob(b64), out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  async function flushInput() {
+    if (inputBusy || !inputQueue || !termId) return;
+    inputBusy = true;
+    var data = inputQueue; inputQueue = "";
+    try { await post("/api/term/input", { id: termId, data: data }); } catch (_) {}
+    inputBusy = false;
+    if (inputQueue) flushInput();
+  }
+  function sendInput(data) { inputQueue += data; flushInput(); }
+  function saveSession() { try { sessionStorage.setItem("meshTerm", termId || ""); } catch (_) {} }
+  async function openShell(reuse) {
+    if (termAbort) termAbort.abort();
+    termId = null; termOffset = -1;
+    if (reuse) {
+      try { termId = sessionStorage.getItem("meshTerm") || null; } catch (_) { termId = null; }
+    }
+    if (!termId) {
+      term.reset();
+      var res = await post("/api/term/open", { cols: term.cols, rows: term.rows });
+      var body = await res.json().catch(function () { return {}; });
+      if (!res.ok) { term.write("\r\n\x1b[31m" + (body.error || "terminal unavailable") + "\x1b[0m\r\n"); setText("termState", "unavailable"); return; }
+      termId = body.id;
+    } else {
+      term.reset();
+    }
+    saveSession();
+    setText("termState", "connected · this computer · your user account");
+    streamShell(termId);
+    post("/api/term/resize", { id: termId, cols: term.cols, rows: term.rows });
+  }
+  async function streamShell(id) {
+    var ctrl = new AbortController(); termAbort = ctrl;
+    try {
+      var res = await fetch("/api/term/stream?id=" + encodeURIComponent(id) + "&offset=" + termOffset, { signal: ctrl.signal, cache: "no-store" });
+      if (res.status === 410 || res.status === 404) { if (id === termId) openShell(false); return; }
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      var reader = res.body.getReader(), decoder = new TextDecoder(), buffer = "";
+      while (true) {
+        var chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        var index;
+        while ((index = buffer.indexOf("\n\n")) >= 0) {
+          var ev = parseEvent(buffer.slice(0, index));
+          buffer = buffer.slice(index + 2);
+          if (!ev) continue;
+          if (ev.event === "output") { term.write(b64bytes(ev.data.data)); termOffset = ev.data.offset; }
+          else if (ev.event === "exit") {
+            term.write("\r\n\x1b[33m[shell exited with code " + ev.data.code + "; press Enter for a new shell]\x1b[0m\r\n");
+            termId = null; saveSession(); setText("termState", "exited");
+            return;
+          }
+        }
+      }
+    } catch (err) {
+      if (err.name === "AbortError") return;
+    }
+    // Dashboard restarted or connection dropped: retry the same session shortly.
+    if (id === termId) setTimeout(function () { if (id === termId) streamShell(id); }, 1500);
+  }
+  function setupTerminal(cli) {
+    if (!window.Terminal) { return; }
+    $("termPanel").hidden = false;
+    term = new window.Terminal({
+      cursorBlink: true, convertEol: false, scrollback: 5000, fontSize: 13,
+      fontFamily: 'ui-monospace, SFMono-Regular, "DejaVu Sans Mono", Menlo, Consolas, monospace',
+      theme: { background: "#0b1016", foreground: "#d7e2ee", cursor: "#7ee2a8", selectionBackground: "#2b6346" }
+    });
+    fit = new window.FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open($("term"));
+    fit.fit();
+    term.onData(function (d) {
+      if (!termId) { if (d === "\r") openShell(false); return; }
+      sendInput(d);
+    });
+    term.onResize(function (size) { if (termId) post("/api/term/resize", { id: termId, cols: size.cols, rows: size.rows }); });
+    window.addEventListener("resize", function () { fit.fit(); });
+    if (window.ResizeObserver) new ResizeObserver(function () { fit.fit(); }).observe($("term"));
+    Array.prototype.forEach.call($("quick").querySelectorAll("button[data-cmd],button[data-raw]"), function (b) {
+      var line = b.dataset.raw || (cli + " " + b.dataset.cmd);
+      b.title = line;
+      b.addEventListener("click", function () { if (termId) { sendInput(line + "\r"); term.focus(); } });
+    });
+    $("termNew").addEventListener("click", function () { if (termId) post("/api/term/close", { id: termId }); termId = null; openShell(false); term.focus(); });
+    $("termMax").addEventListener("click", function () {
+      var max = $("termPanel").classList.toggle("max");
+      $("termMax").textContent = max ? "Restore" : "Maximize";
+      setTimeout(function () { fit.fit(); term.focus(); }, 30);
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && $("termPanel").classList.contains("max") && e.shiftKey) $("termMax").click();
+    });
+    openShell(true);
+  }
+
+  async function loadInfo() {
+    try {
+      var res = await fetch("/api/info", { cache: "no-store" });
+      if (!res.ok) return;
+      var info = await res.json();
+      if (info.invites && info.host && info.host.group_host) {
+        $("invitePanel").hidden = false;
+        setText("hostAddr", info.host.endpoint);
+        setText("reach", info.host.reachability || "");
+      }
+      if (info.terminal) setupTerminal(info.cli || "meshcompute");
+    } catch (_) {}
+  }
+
+  $("invite").addEventListener("click", makeInvite);
   $("refresh").addEventListener("click", loadStatus);
   $("run").addEventListener("click", runInference);
   $("stop").addEventListener("click", function () { if (controller) controller.abort(); });
   $("node").addEventListener("change", updateModels);
 
   loadStatus();
+  loadInfo();
   poll = setInterval(loadStatus, 5000);
 })();
 </script>

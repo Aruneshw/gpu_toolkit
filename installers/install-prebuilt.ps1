@@ -84,7 +84,13 @@ try {
             } finally { $env:GOTOOLCHAIN = $oldToolchain }
         }
         if ($existingHash -eq $actual -and $null -ne $markerItem) { Write-Output "Already installed: $binary"; return }
-        if ($null -ne (Get-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue)) { throw "Preserve or remove the reviewed backup first: $backup" }
+        # Keep exactly one previous version. An older backup from an earlier
+        # upgrade used to block every later upgrade.
+        $oldBackup = Get-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+        if ($null -ne $oldBackup) {
+            if ($oldBackup.PSIsContainer -or ($oldBackup.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Refusing non-regular file: $backup" }
+            [IO.File]::Delete($backup)
+        }
     }
 
     & $stage install

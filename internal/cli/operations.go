@@ -93,18 +93,26 @@ func operational(ctx context.Context, dir string, c config.Config, command strin
 		return writeJSON(out, s)
 	case "ui":
 		listen := "127.0.0.1:8081"
-		if e := flags("ui", args, func(f *flag.FlagSet) { f.StringVar(&listen, "listen", listen, "loopback listen address") }); e != nil {
+		open := false
+		if e := flags("ui", args, func(f *flag.FlagSet) {
+			f.StringVar(&listen, "listen", listen, "loopback listen address")
+			f.BoolVar(&open, "open", false, "open the dashboard in the default browser")
+		}); e != nil {
 			return e
 		}
 		s, e := dashboard.New(dashboard.NewRemote(dir, c), listen, "")
 		if e != nil {
 			return e
 		}
+		s.EnableTerminal(dir)
 		if _, e = fmt.Fprintf(out, "MeshCompute dashboard: http://%s/?token=%s\n", s.Listen(), s.Token()); e != nil {
 			return e
 		}
-		if _, e = fmt.Fprintln(out, "Loopback only, token protected, aggregate telemetry only. Press Ctrl-C to stop."); e != nil {
+		if _, e = fmt.Fprintln(out, "Loopback only, token protected. Press Ctrl-C to stop."); e != nil {
 			return e
+		}
+		if open {
+			openBrowser(fmt.Sprintf("http://%s/?token=%s", s.Listen(), s.Token()))
 		}
 		return s.Serve(ctx)
 	case "monitor":

@@ -6,7 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"meshcompute/internal/backend"
@@ -199,23 +199,43 @@ func (a *Agent) connectLoop(ctx context.Context, endpoint string) {
 		}
 		a.Handler().ServeHTTP(w, r)
 	})
+	failures, connected := 0, false
+	announce := func() {
+		if !connected {
+			a.log.Printf("event=worker_connection state=connected host=%s", endpoint)
+			fmt.Fprintf(a.log.Writer(), "Connected to the group host %s. Keep this window open; your GPU is now visible on the host dashboard.\n", endpoint)
+		}
+		connected, failures = true, 0
+	}
 	for ctx.Err() == nil {
 		start := time.Now()
-		err = tunnel.ServeWorker(ctx, endpoint, cfg, handler)
+		upgraded := false
+		err = tunnel.ServeWorkerNotify(ctx, endpoint, cfg, handler, func() { upgraded = true; announce() })
 		if ctx.Err() != nil {
 			return
 		}
-		if err == nil || time.Since(start) > 10*time.Second {
+		// A connection that lasted, or ended cleanly, was accepted by the host;
+		// idle renewals every 30 seconds are normal and are not logged.
+		ok := upgraded || err == nil || time.Since(start) > 10*time.Second
+		if ok {
 			delay = 250 * time.Millisecond
-		} else if delay < 5*time.Second {
-			delay *= 2
-		}
-		if err != nil && !errors.Is(err, context.Canceled) {
-			a.log.Print("event=worker_connection state=reconnecting")
+			announce()
+		} else {
+			if delay < 5*time.Second {
+				delay *= 2
+			}
+			failures++
+			if connected || failures == 1 || failures%24 == 0 {
+				a.log.Printf("event=worker_connection state=retrying reason=%q", connectionReason(err))
+			}
+			if connected || failures == 3 {
+				fmt.Fprintf(a.log.Writer(), "Cannot reach the group host %s: %s.\n  Still retrying. If the host restarted on a new address, ask for a NEW invitation and run: meshcompute join <NEW-INVITATION>\n", endpoint, connectionReason(err))
+			}
+			connected = false
 		}
 		// Replenish a consumed connection promptly. Failed handshakes back off.
 		pause := time.Duration(rand.IntN(50)) * time.Millisecond
-		if err != nil {
+		if !ok {
 			pause += delay
 		}
 		timer := time.NewTimer(pause)
@@ -226,4 +246,25 @@ func (a *Agent) connectLoop(ctx context.Context, endpoint string) {
 		case <-timer.C:
 		}
 	}
+}
+
+// connectionReason turns low-level dial and TLS errors into advice a person can act on.
+func connectionReason(err error) string {
+	if err == nil {
+		return "connection closed"
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "security operation failed"), strings.Contains(msg, "certificate"):
+		return "the host's certificate does not match this worker's invitation (the host probably moved to a new address)"
+	case strings.Contains(msg, "rejected reverse connection"):
+		return "the host rejected this worker (it may have been revoked)"
+	case strings.Contains(msg, "refused"):
+		return "connection refused (the host program is not running on that address)"
+	case strings.Contains(msg, "timeout"), strings.Contains(msg, "deadline"):
+		return "connection timed out (host offline, address changed, or blocked by a firewall)"
+	case strings.Contains(msg, "unreachable"), strings.Contains(msg, "no route"):
+		return "network unreachable (check internet/IPv6 on both computers)"
+	}
+	return msg
 }
