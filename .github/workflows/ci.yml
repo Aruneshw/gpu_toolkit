@@ -227,8 +227,9 @@ jobs:
               # ci-2 is the upgrade that used to fail with File.Replace; ci-3
               # upgrades again while a .previous backup already exists.
               Pack $ver
-              & .\win.bat install -AllowElevated
-              if ($LASTEXITCODE -ne 0) { throw "win.bat install failed for $ver" }
+              $log = (& .\win.bat install -AllowElevated 2>&1 | Out-String)
+              Write-Output $log
+              if ($LASTEXITCODE -ne 0) { throw "win.bat install failed for ${ver}: $log" }
               $got = (& $binary version)
               if ($got -ne $ver) { throw "expected installed version $ver, got $got" }
               Write-Output "installed $got"
@@ -259,6 +260,13 @@ jobs:
             $status = (& $binary --home (Join-Path $env:APPDATA 'meshcompute-group') status) -join "`n"
             if ($status -notmatch 'worker-') { throw "host status does not list the worker: $status" }
             Write-Output 'win.bat install/upgrade/host/key/join OK'
+          } catch {
+            $msg = ($_ | Out-String) -replace "`r?`n", ' | '
+            Write-Output "::error title=win.bat end-to-end::$msg"
+            foreach ($f in 'host.log', 'join.log') {
+              if (Test-Path $f) { $t = (Get-Content $f -Raw) -replace "`r?`n", ' | '; Write-Output "::error title=$f::$t" }
+            }
+            throw
           } finally {
             Get-Process meshcompute -ErrorAction SilentlyContinue | Stop-Process -Force
             Pop-Location
