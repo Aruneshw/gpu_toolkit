@@ -43,7 +43,6 @@ download() {
   a="$(arch)"
   dir="$HOME/.local/share/meshcompute"
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
   url="https://github.com/$REPO/releases/latest/download"
   info "Downloading MeshCompute (linux-$a) from GitHub releases..." >&2
   if command -v curl >/dev/null 2>&1; then
@@ -60,23 +59,42 @@ download() {
   mkdir -p "$dir"
   tar -xzf "$tmp/m.tgz" -C "$tmp" meshcompute
   install -m 0755 "$tmp/meshcompute" "$dir/meshcompute"
+  rm -rf "$tmp"
   info "Installed $dir/meshcompute (checksum verified)" >&2
   echo "$dir/meshcompute"
 }
 
+# In a source checkout with Go installed, always rebuild first (Go's build
+# cache makes this take about a second), so a stale bin/meshcompute from an
+# older version can never be used.
+build_from_source() {
+  local v
+  v="$(git -C "$HERE" describe --tags --always --dirty 2>/dev/null || echo dev)"
+  info "Building MeshCompute from source ($v)..." >&2
+  # Build beside the old file and swap it in, whatever bin/meshcompute holds.
+  (cd "$HERE" && mkdir -p bin && go build -trimpath -ldflags "-X main.version=$v" -o bin/.meshcompute.new ./cmd/meshcompute &&
+    mv -f bin/.meshcompute.new bin/meshcompute) >&2 ||
+    die "build failed; run 'go build ./...' in $HERE to see why"
+  echo "$HERE/bin/meshcompute"
+}
+
+# A binary is current when it knows the newest launcher flag (host --open).
+current() { "$1" help 2>/dev/null | grep -q -- '--open'; }
+
 find_binary() {
   local a c
   a="$(arch)"
+  if [ -f "$HERE/go.mod" ] && [ -d "$HERE/cmd/meshcompute" ] && command -v go >/dev/null 2>&1; then
+    build_from_source; return
+  fi
   for c in "$HERE/meshcompute" "$HERE/bin/meshcompute" "$HERE/dist/meshcompute-linux-$a" \
            "$HOME/.local/share/meshcompute/meshcompute" "$HOME/.local/bin/meshcompute"; do
-    if [ -x "$c" ] && [ ! -d "$c" ]; then echo "$c"; return; fi
+    if [ -x "$c" ] && [ ! -d "$c" ] && current "$c"; then echo "$c"; return; fi
   done
-  if command -v meshcompute >/dev/null 2>&1; then command -v meshcompute; return; fi
-  if [ -f "$HERE/go.mod" ] && command -v go >/dev/null 2>&1; then
-    info "Building MeshCompute from source..." >&2
-    (cd "$HERE" && go build -trimpath -o bin/meshcompute ./cmd/meshcompute) >&2
-    echo "$HERE/bin/meshcompute"; return
+  if command -v meshcompute >/dev/null 2>&1 && current "$(command -v meshcompute)"; then
+    command -v meshcompute; return
   fi
+  # Nothing current on this computer: fetch the latest verified release.
   download
 }
 

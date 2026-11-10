@@ -225,7 +225,8 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 	fmt.Fprintf(output, "Group host: %s\nPrivate single-use invitation (expires in %s):\n%s\n", advertise, ttl, code)
 	fmt.Fprintf(output, "Dashboard: http://%s/?token=%s\n", panel.Listen(), panel.Token())
 	fmt.Fprintln(output, "  Open it for live GPU/VRAM totals, one-click invitations for friends, and a built-in terminal.")
-	fmt.Fprintf(output, "Friend's command (Windows PowerShell, inside the extracted release ZIP):\n  .\\join.cmd %s\n", code)
+	fmt.Fprintln(output, "Friend on Windows: extract the release ZIP, double-click win.bat, choose 2 and paste the invitation above.")
+	fmt.Fprintln(output, "Friend on Linux: ./linux.sh join <invitation>")
 	hostIP := hostOf(listen)
 	ip := net.ParseIP(hostIP)
 	if ip != nil && ip.IsLoopback() {

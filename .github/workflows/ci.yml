@@ -271,3 +271,44 @@ jobs:
             Get-Process meshcompute -ErrorAction SilentlyContinue | Stop-Process -Force
             Pop-Location
           }
+
+  linux-launcher:
+    name: linux.sh end-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: stale binary is rebuilt; host, key, join through linux.sh
+        env:
+          MESHCOMPUTE_NO_BROWSER: "1"
+          MESHCOMPUTE_HOST_HOME: ${{ runner.temp }}/host
+          MESHCOMPUTE_WORKER_HOME: ${{ runner.temp }}/worker
+          MESHCOMPUTE_PORT: "17443"
+        run: |
+          set -eu
+          bash -n linux.sh
+          # A stale build without the newest flags must never be used.
+          mkdir -p bin && printf '#!/bin/sh\necho stale\n' > bin/meshcompute && chmod +x bin/meshcompute
+          echo 5 | ./linux.sh | tee menu.log
+          ./bin/meshcompute help | grep -q -- '--open'
+          # Worker uses its own local port so it does not collide with the host.
+          ./bin/meshcompute --home "$MESHCOMPUTE_WORKER_HOME" install
+          ./bin/meshcompute --home "$MESHCOMPUTE_WORKER_HOME" config set listen 127.0.0.1:17444
+          ./linux.sh host > host.log 2>&1 &
+          for i in $(seq 90); do grep -q event=agent_start host.log 2>/dev/null && break; sleep 1; done
+          grep -q event=agent_start host.log || { cat host.log; exit 1; }
+          ./linux.sh invite | tee invite.log
+          key=$(grep -oE '[A-Za-z0-9_-]{200,}' invite.log | head -1)
+          [ -n "$key" ]
+          ./linux.sh join "$key" > join.log 2>&1 &
+          for i in $(seq 90); do grep -q 'Connected to the group host' join.log 2>/dev/null && break; sleep 1; done
+          cat join.log
+          grep -q 'Connected to the group host' join.log || { cat host.log; exit 1; }
+          ./bin/meshcompute --home "$MESHCOMPUTE_HOST_HOME" status | grep -q worker-
+          echo 'linux.sh rebuild/host/key/join OK'
+          kill $(jobs -p) 2>/dev/null || true
