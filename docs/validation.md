@@ -242,5 +242,9 @@ real Windows, and a second physical computer on another network was not used.
   invitation* printed copy-ready Windows/Linux commands. *Join a group* with a
   pasted whole `.\join.cmd <KEY>` line enrolled and connected; *Reconnect*
   reconnected; unknown options and a missing identity gave clear errors.
-- `windows.cmd` / `installers/menu-windows.ps1` were reviewed but **not
-  executed**: no Windows or PowerShell runtime was available here.
+- The first Windows menu (`windows.cmd`) failed on a friend's PC during the
+  upgrade step: `File.Replace(..., $null)` under Windows PowerShell 5.1 raised
+  "The path is not of a legal form" (PowerShell passes `$null` as `""`).
+  Fixed in `install-prebuilt.ps1`; `windows.cmd` was replaced by `win.bat`,
+  and CI now runs install, two upgrades, host, invite and join through
+  `win.bat` with Windows PowerShell 5.1 on a real Windows runner.

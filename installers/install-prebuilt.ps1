@@ -106,7 +106,11 @@ try {
     if ($null -ne $existing) { [IO.File]::Move($binary, $backup); $backedUp = $true }
     [IO.File]::Move($stage, $binary)
     $placed = $true
-    if ($null -ne $markerItem) { [IO.File]::Replace($markerStage, $marker, $null) } else { [IO.File]::Move($markerStage, $marker) }
+    # Windows PowerShell turns $null into "" for .NET string arguments, so
+    # File.Replace(..., $null) fails with "The path is not of a legal form".
+    # Overwrite the small marker with a copy instead.
+    [IO.File]::Copy($markerStage, $marker, $true)
+    [IO.File]::Delete($markerStage)
     $committed = $true
 
     Write-Output "Installed $binary (version $version). Add $binDir to PATH if needed."

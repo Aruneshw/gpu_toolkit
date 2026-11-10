@@ -189,3 +189,77 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Idempotent installation failed.' }
           & .\installers\uninstall.ps1 -AllowElevated
           if (Test-Path -LiteralPath $binary) { throw 'Uninstall failed.' }
+
+  windows-launcher:
+    name: win.bat end-to-end (Windows PowerShell 5.1)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: install, upgrade twice, host, key, join through win.bat
+        shell: pwsh
+        env:
+          CGO_ENABLED: "0"
+          MESHCOMPUTE_NO_PAUSE: "1"
+          MESHCOMPUTE_NO_BROWSER: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Mirror the release ZIP in a folder whose path has a space, like a
+          # real "Desktop\New folder" extraction.
+          $pkg = Join-Path $env:RUNNER_TEMP 'New folder'
+          New-Item -ItemType Directory -Force -Path "$pkg\installers", "$pkg\scripts" | Out-Null
+          Copy-Item win.bat, join.cmd, LICENSE $pkg
+          Copy-Item installers\menu-windows.ps1, installers\install-windows.ps1, installers\install-prebuilt.ps1, installers\uninstall.ps1 "$pkg\installers"
+          Copy-Item scripts\windows-gpu-setup.ps1 "$pkg\scripts"
+          $binary = Join-Path $env:LOCALAPPDATA 'meshcompute\bin\meshcompute.exe'
+          function Pack([string]$ver) {
+            go build -trimpath -ldflags "-X main.version=$ver" -o "$pkg\meshcompute-windows-amd64.exe" ./cmd/meshcompute
+            if ($LASTEXITCODE -ne 0) { throw 'build failed' }
+            $h = (Get-FileHash "$pkg\meshcompute-windows-amd64.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$h  meshcompute-windows-amd64.exe" | Set-Content -Encoding ascii "$pkg\SHA256SUMS"
+          }
+          Push-Location $pkg
+          try {
+            foreach ($ver in 'ci-1', 'ci-2', 'ci-3') {
+              # ci-2 is the upgrade that used to fail with File.Replace; ci-3
+              # upgrades again while a .previous backup already exists.
+              Pack $ver
+              & .\win.bat install -AllowElevated
+              if ($LASTEXITCODE -ne 0) { throw "win.bat install failed for $ver" }
+              $got = (& $binary version)
+              if ($got -ne $ver) { throw "expected installed version $ver, got $got" }
+              Write-Output "installed $got"
+            }
+            & .\win.bat invite -AllowElevated
+            if ($LASTEXITCODE -eq 0) { throw 'invite without a hosted group should fail' }
+
+            $hostProc = Start-Process cmd.exe -ArgumentList '/c', 'win.bat host -AllowElevated > host.log 2>&1' -WorkingDirectory $pkg -WindowStyle Hidden -PassThru
+            $deadline = (Get-Date).AddSeconds(90)
+            while (-not ((Test-Path host.log) -and (Select-String -Path host.log -Pattern 'event=agent_start' -Quiet))) {
+              if ((Get-Date) -gt $deadline) { Get-Content host.log -ErrorAction SilentlyContinue; throw 'host did not start' }
+              Start-Sleep -Seconds 1
+            }
+            Get-Content host.log | Select-Object -First 4
+
+            $out = (& .\win.bat invite -AllowElevated) -join "`n"
+            if ($LASTEXITCODE -ne 0) { throw "invite failed: $out" }
+            $key = ([regex]::Match($out, '(?m)^\s*([A-Za-z0-9_-]{200,})\s*$')).Groups[1].Value
+            if (-not $key) { throw "no key in invite output: $out" }
+
+            $joinProc = Start-Process cmd.exe -ArgumentList '/c', "win.bat join $key -AllowElevated > join.log 2>&1" -WorkingDirectory $pkg -WindowStyle Hidden -PassThru
+            $deadline = (Get-Date).AddSeconds(90)
+            while (-not ((Test-Path join.log) -and (Select-String -Path join.log -Pattern 'Connected to the group host' -Quiet))) {
+              if ((Get-Date) -gt $deadline) { Get-Content join.log -ErrorAction SilentlyContinue; Get-Content host.log; throw 'worker did not connect' }
+              Start-Sleep -Seconds 1
+            }
+            Get-Content join.log
+            $status = (& $binary --home (Join-Path $env:APPDATA 'meshcompute-group') status) -join "`n"
+            if ($status -notmatch 'worker-') { throw "host status does not list the worker: $status" }
+            Write-Output 'win.bat install/upgrade/host/key/join OK'
+          } finally {
+            Get-Process meshcompute -ErrorAction SilentlyContinue | Stop-Process -Force
+            Pop-Location
+          }

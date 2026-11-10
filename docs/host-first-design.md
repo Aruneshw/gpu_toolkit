@@ -7,7 +7,7 @@ There is no shared MeshCompute server, central relay, or VPN dependency.
 ## Quick start
 
 Shortest path: **Linux** `./linux.sh` (choose 1 to host, 2 to join),
-**Windows** double-click `windows.cmd` (1 = join, 3 = host). The manual
+**Windows** double-click `win.bat` (1 = host, 2 = join). The manual
 commands below are what those menus run.
 
 Download a package from [Releases](https://github.com/Aruneshw/gpu_toolkit/releases).

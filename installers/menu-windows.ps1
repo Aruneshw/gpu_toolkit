@@ -1,9 +1,12 @@
-# MeshCompute one-step launcher for Windows (started by windows.cmd).
-#   windows.cmd               menu
-#   windows.cmd join CODE     join a friend's group
-#   windows.cmd host          host a group: shows an invitation, opens the dashboard
-#   windows.cmd invite        new invitation for the group you are hosting
-#   windows.cmd reconnect     reconnect this computer to the group it joined
+# MeshCompute one-step launcher for Windows. Start it with win.bat.
+#   win.bat               menu
+#   win.bat host          generate a key: host a group and open the dashboard
+#   win.bat join KEY      join a friend's group with their key
+#   win.bat reconnect     reconnect this PC to the group it joined
+#   win.bat invite        another key for the group you are hosting
+#   win.bat gpu           install the GPU AI backend (llama.cpp + small model)
+#   win.bat install       only install or update MeshCompute
+# Written for Windows PowerShell 5.1 (built into Windows 10/11).
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)][string]$Action,
@@ -12,7 +15,6 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-if ($env:OS -ne 'Windows_NT') { throw 'This launcher requires Windows.' }
 
 $root = Split-Path $PSScriptRoot -Parent
 $exe = Join-Path $env:LOCALAPPDATA 'meshcompute\bin\meshcompute.exe'
@@ -30,91 +32,122 @@ function Get-ExitCode {
     return [int]$v.Value
 }
 
-# Install or update. The release ZIP's bundled executable is preferred (no
-# network); otherwise the latest release is downloaded once and verified.
+# Install or update. The ZIP's bundled executable is preferred (no network);
+# otherwise the latest release is downloaded and its SHA-256 verified. A failed
+# update never blocks you: the already-installed version keeps working.
 function Install-MeshCompute {
-    if ((Test-Path -LiteralPath $bundle) -or -not (Test-Path -LiteralPath $exe)) {
-        Write-Step 'Installing MeshCompute (checksum verified)...'
+    $needed = (Test-Path -LiteralPath $bundle) -or -not (Test-Path -LiteralPath $exe)
+    if (-not $needed) { return }
+    Write-Step 'Installing / updating MeshCompute (checksum verified)...'
+    try {
         & (Join-Path $PSScriptRoot 'install-windows.ps1') -AllowElevated:$AllowElevated | Out-Host
+    } catch {
+        if (Test-Path -LiteralPath $exe) {
+            Write-Note "Update skipped: $($_.Exception.Message)"
+            Write-Note 'Continuing with the version that is already installed.'
+        } else {
+            throw "Installation failed: $($_.Exception.Message)"
+        }
     }
     if (-not (Test-Path -LiteralPath $exe)) { throw "MeshCompute is not installed at $exe" }
 }
 
-
 function Show-FriendCommands([string]$invite) {
     Write-Host ''
-    Write-Host "Send ONE of these to your friend privately (works once, expires in $ttl):" -ForegroundColor Cyan
+    Write-Host "Send this to your friend privately (works once, expires in $ttl):" -ForegroundColor Cyan
     Write-Host ''
-    Write-Host 'Windows (extract meshcompute-windows-amd64.zip, open PowerShell in that folder):'
-    Write-Host "  .\join.cmd $invite"
+    Write-Host 'Windows: extract meshcompute-windows-amd64.zip, double-click win.bat, choose 2, paste:'
+    Write-Host "  $invite"
     Write-Host ''
-    Write-Host 'Linux (extract meshcompute-linux-amd64.tar.gz, open a terminal in that folder):'
+    Write-Host 'Linux: extract meshcompute-linux-amd64.tar.gz and run in that folder:'
     Write-Host "  ./linux.sh join $invite"
     Write-Host ''
     Write-Host "Download for your friend: $releases"
-    try { Set-Clipboard -Value ".\join.cmd $invite"; Write-Note 'The Windows command was copied to your clipboard.' } catch { }
+    try { Set-Clipboard -Value $invite; Write-Note 'The key was copied to your clipboard.' } catch { }
 }
 
 function Start-Join([string]$value) {
-    Write-Step 'Joining the group (a new key pair is generated on this computer automatically).'
+    Write-Step 'Joining the group (this PC creates its own key pair automatically).'
     if ($value) {
         & $exe join $value.Trim()
     } else {
-        # meshcompute reads the pasted invitation itself (no Read-Host length
-        # limit) and offers "Enter = reconnect" if this PC already joined.
+        # meshcompute reads the pasted key itself (no Read-Host length limit)
+        # and offers "Enter = reconnect" if this PC already joined.
         & $exe join
     }
-    exit (Get-ExitCode)
 }
 
 function Start-Reconnect {
     Write-Step 'Reconnecting to your group. Keep this window open; Ctrl-C stops.'
     & $exe start
-    exit (Get-ExitCode)
 }
 
 function Start-Host {
-    Write-Step "Starting your group host (state: $hostHome)"
+    Write-Step "Generating a key and hosting your group (state: $hostHome)"
     Write-Note 'If Windows Firewall asks, click "Allow access" so friends can connect.'
-    Write-Host 'The dashboard opens in your browser: live GPUs/VRAM of every laptop and an Invite a friend button.'
+    Write-Host 'Your browser opens the dashboard: every laptop''s GPUs/VRAM and an Invite a friend button.'
     Write-Host 'Keep this window open. Press Ctrl-C to stop the group.'
     Write-Host ''
     & $exe --home $hostHome host --auto --ttl $ttl --open
-    exit (Get-ExitCode)
 }
 
 function New-Invitation {
-    if (-not (Test-Path -LiteralPath (Join-Path $hostHome 'identity.json'))) { throw 'You are not hosting a group yet. Choose "Host a group" first.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $hostHome 'identity.json'))) { throw 'You are not hosting a group yet. Choose 1 (Generate a key) first.' }
     $invite = (& $exe --home $hostHome pair --ttl $ttl | Select-Object -Last 1)
-    if ((Get-ExitCode) -ne 0 -or -not $invite) { throw 'Could not create an invitation.' }
+    if ((Get-ExitCode) -ne 0 -or -not $invite) { throw 'Could not create a key.' }
     Show-FriendCommands ([string]$invite).Trim()
-    Write-Note 'Your group host window must be running for your friend to connect.'
+    Write-Note 'Your host window (option 1) must be running for your friend to connect.'
 }
 
-Install-MeshCompute
-$version = (& $exe version | Select-Object -First 1)
-
-if (-not $Action) {
-    Write-Host ''
-    Write-Host "MeshCompute - share GPUs between laptops   ($version)" -ForegroundColor White
-    Write-Host ''
-    Write-Host '  1) Join a group     - paste the invitation key a friend sent you'
-    Write-Host '  2) Reconnect        - this computer already joined; connect again'
-    Write-Host '  3) Host a group     - generate an invitation key and open the dashboard'
-    Write-Host '  4) New invitation   - another key for the group you are hosting'
-    Write-Host '  5) Quit'
-    Write-Host ''
-    $choice = Read-Host 'Choose 1-5'
-    $Action = @{ '1' = 'join'; '2' = 'reconnect'; '3' = 'host'; '4' = 'invite' }[$choice.Trim()]
-    if (-not $Action) { exit 0 }
+# The GPU backend runs in its own window so the worker window stays usable.
+function Start-GpuSetup {
+    $script = Join-Path $root 'scripts\windows-gpu-setup.ps1'
+    if (-not (Test-Path -LiteralPath $script)) { throw "GPU setup script missing: $script" }
+    if (-not (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue)) {
+        Write-Note 'nvidia-smi was not found. Install the latest NVIDIA driver first; without an NVIDIA GPU the model cannot run on the GPU.'
+    }
+    Write-Step 'Opening the GPU setup in a new window (downloads about 1.6 GB once).'
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoLogo', '-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', "`"$script`"")
+    Write-Host 'Keep that window open: it runs the AI backend. Then use option 2 or 3 here to connect.'
 }
 
-switch ($Action.ToLowerInvariant()) {
-    'join' { Start-Join $Code }
-    'reconnect' { Start-Reconnect }
-    'start' { Start-Reconnect }
-    'host' { Start-Host }
-    'invite' { New-Invitation }
-    'key' { New-Invitation }
-    default { throw "Unknown option '$Action'. Use: join CODE, reconnect, host, invite." }
+try {
+    Install-MeshCompute
+    $version = (& $exe version | Select-Object -First 1)
+
+    if (-not $Action) {
+        Write-Host ''
+        Write-Host "MeshCompute - share GPUs between laptops   (version $version)" -ForegroundColor White
+        Write-Host ''
+        Write-Host '  1) Generate a key   - host a group, get a key for friends, open the dashboard'
+        Write-Host '  2) Join with a key  - paste the key a friend sent you'
+        Write-Host '  3) Reconnect        - this PC already joined; connect again'
+        Write-Host '  4) New key          - another key for the group you are hosting'
+        Write-Host '  5) Set up GPU AI    - install llama.cpp + a small model on this PC'
+        Write-Host '  6) Quit'
+        Write-Host ''
+        $choice = [string](Read-Host 'Choose 1-6')
+        $Action = @{ '1' = 'host'; '2' = 'join'; '3' = 'reconnect'; '4' = 'invite'; '5' = 'gpu' }[$choice.Trim()]
+        if (-not $Action) { exit 0 }
+    }
+
+    # Functions are called as statements so meshcompute's output streams
+    # straight to this window; its exit code is read afterwards.
+    $global:LASTEXITCODE = 0
+    switch ($Action.ToLowerInvariant()) {
+        'host' { Start-Host }
+        'join' { Start-Join $Code }
+        'reconnect' { Start-Reconnect }
+        'start' { Start-Reconnect }
+        'invite' { New-Invitation }
+        'key' { New-Invitation }
+        'gpu' { Start-GpuSetup }
+        'install' { Write-Host "MeshCompute $version is installed at $exe" }
+        default { throw "Unknown option '$Action'. Use: host, join KEY, reconnect, invite, gpu, install." }
+    }
+    exit (Get-ExitCode)
+} catch {
+    Write-Host ''
+    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
 }

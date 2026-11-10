@@ -9,6 +9,9 @@ import (
 // openBrowser shows url in the desktop's default browser. It is best effort:
 // the URL is always printed as well, so a headless machine still works.
 func openBrowser(url string) bool {
+	if os.Getenv("MESHCOMPUTE_NO_BROWSER") != "" {
+		return false
+	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":

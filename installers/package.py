@@ -10,8 +10,8 @@ dist = pathlib.Path(sys.argv[1]).resolve()
 with zipfile.ZipFile(dist / 'meshcompute-windows-amd64.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
     for name in ('meshcompute-windows-amd64.exe', 'SHA256SUMS'):
         archive.write(dist / name, name)
-    for name in ('windows.cmd', 'install.cmd', 'join.cmd', 'installers/menu-windows.ps1',
-                 'installers/install-windows.ps1',
+    for name in ('win.bat', 'join.cmd', 'installers/menu-windows.ps1',
+                 'scripts/windows-gpu-setup.ps1', 'installers/install-windows.ps1',
                  'installers/install-prebuilt.ps1', 'installers/uninstall.ps1',
                  'docs/windows.md', 'docs/host-first-design.md', 'LICENSE'):
         archive.write(root / name, name)

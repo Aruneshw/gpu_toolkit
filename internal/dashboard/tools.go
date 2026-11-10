@@ -74,7 +74,7 @@ func (r *Remote) Invite(_ context.Context, ttl time.Duration) (Invitation, error
 // JoinCommands are the friend-side commands for one invitation code.
 func JoinCommands(code string) []Command {
 	return []Command{
-		{Label: "Windows: open PowerShell inside the extracted meshcompute-windows-amd64.zip folder (or double-click windows.cmd, choose 1 and paste the code)", Command: `.\join.cmd ` + code},
+		{Label: "Windows: open PowerShell inside the extracted meshcompute-windows-amd64.zip folder (or double-click win.bat, choose 2 and paste the key)", Command: `.\join.cmd ` + code},
 		{Label: "Windows, already installed (any PowerShell window)", Command: `& "$env:LOCALAPPDATA\meshcompute\bin\meshcompute.exe" join ` + code},
 		{Label: "Linux: in a terminal inside the extracted meshcompute-linux-amd64.tar.gz folder", Command: `./linux.sh join ` + code},
 	}

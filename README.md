@@ -49,17 +49,18 @@ Download the package for your system from
 
 | | Linux | Windows |
 | --- | --- | --- |
-| Start the menu | `./linux.sh` | double-click `windows.cmd` |
-| Host a group (creates the invitation key, opens the dashboard) | `./linux.sh host` | menu option 3 |
-| Join with a friend's key | `./linux.sh join <KEY>` | `.\join.cmd <KEY>` or menu option 1 |
-| Reconnect after closing the window | `./linux.sh reconnect` | menu option 2 |
-| Another key for your running group | `./linux.sh invite` | menu option 4 |
+| Start the menu | `./linux.sh` | double-click `win.bat` |
+| 1. Generate a key: host a group, open the dashboard | `./linux.sh host` | option 1 |
+| 2. Join with a friend's key | `./linux.sh join <KEY>` | option 2 (or `.\join.cmd <KEY>`) |
+| 3. Reconnect after closing the window | `./linux.sh reconnect` | option 3 |
+| 4. Another key for your running group | `./linux.sh invite` | option 4 |
+| 5. Install the GPU AI backend (llama.cpp + small model) | see docs/backend.md | option 5 |
 
 The menus install MeshCompute when needed (bundled binary, or the latest
 release with its SHA-256 checked), generate keys automatically, and open the
 dashboard in your browser. Pasting the whole command a friend sent also works:
 the key is always the last word. The source checkout includes the same
-`linux.sh` and `windows.cmd`.
+`linux.sh` and `win.bat`.
 
 ### Ready-to-run packages and creator-hosted groups
 

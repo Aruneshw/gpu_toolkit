@@ -16,7 +16,9 @@ Paste the group creator's invitation and press Enter. Keep the terminal open.
 The command installs a checksum-verified bundled binary and starts the worker;
 it also resumes existing workers. Git, Go and a permanent execution-policy
 change are unnecessary. The GitHub **source ZIP** contains the same command
-and downloads the published binary automatically. `.\install.cmd` installs
+and downloads the published binary automatically. Easiest of all: double-click
+`win.bat` (1 = generate a key and host, 2 = join with a key, 3 = reconnect,
+5 = install the GPU AI backend). `.\install.cmd` (source checkout) installs
 without joining. Open a new terminal for the `meshcompute` PATH command.
 
 See [Creator-hosted groups](host-first-design.md) for the creator's `host`
