@@ -305,7 +305,7 @@ jobs:
           bash -n linux.sh
           # A stale build without the newest flags must never be used.
           mkdir -p bin && printf '#!/bin/sh\necho stale\n' > bin/meshcompute && chmod +x bin/meshcompute
-          echo 5 | ./linux.sh | tee menu.log
+          echo 5 | ./linux.sh 2>&1 | tee menu.log
           ./bin/meshcompute help | grep -q -- '--open'
           # Worker uses its own local port so it does not collide with the host.
           ./bin/meshcompute --home "$MESHCOMPUTE_WORKER_HOME" install
