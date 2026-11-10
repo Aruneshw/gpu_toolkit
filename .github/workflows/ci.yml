@@ -289,6 +289,7 @@ jobs:
           MESHCOMPUTE_HOST_HOME: ${{ runner.temp }}/host
           MESHCOMPUTE_WORKER_HOME: ${{ runner.temp }}/worker
           MESHCOMPUTE_PORT: "17443"
+          MESHCOMPUTE_RELAY: none
         run: |
           set -eu
           report() {

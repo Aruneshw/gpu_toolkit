@@ -22,6 +22,10 @@ $bundle = Join-Path $root 'meshcompute-windows-amd64.exe'
 # Workers keep the default state directory so join.cmd and this menu agree.
 $hostHome = Join-Path $env:APPDATA 'meshcompute-group'
 $ttl = '1h'
+# Public TCP relay so friends on any network can connect. Set the environment
+# variable MESHCOMPUTE_RELAY=none to host directly on this PC's IP instead.
+$relay = if ($env:MESHCOMPUTE_RELAY) { $env:MESHCOMPUTE_RELAY } else { 'bore.pub' }
+if (@('none', 'off', 'direct') -contains $relay.ToLowerInvariant()) { $relay = '' }
 $releases = 'https://github.com/Aruneshw/gpu_toolkit/releases/latest'
 
 function Write-Step([string]$text) { Write-Host "==> $text" -ForegroundColor Green }
@@ -84,11 +88,16 @@ function Start-Reconnect {
 
 function Start-Host {
     Write-Step "Generating a key and hosting your group (state: $hostHome)"
-    Write-Note 'If Windows Firewall asks, click "Allow access" so friends can connect.'
     Write-Host 'Your browser opens the dashboard: every laptop''s GPUs/VRAM and an Invite a friend button.'
     Write-Host 'Keep this window open. Press Ctrl-C to stop the group.'
     Write-Host ''
-    & $exe --home $hostHome host --auto --ttl $ttl --open
+    if ($relay) {
+        Write-Host "Friends connect through the public relay $relay - works from any network."
+        & $exe --home $hostHome host --relay $relay --ttl $ttl --open
+    } else {
+        Write-Note 'If Windows Firewall asks, click "Allow access" so friends can connect.'
+        & $exe --home $hostHome host --direct --auto --ttl $ttl --open
+    }
 }
 
 function New-Invitation {

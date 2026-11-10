@@ -27,6 +27,10 @@ type Config struct {
 	Peers      []Peer `json:"peers"`
 	GroupHost  bool   `json:"group_host,omitempty"`
 	Public     bool   `json:"public,omitempty"`
+	// Relay is the public TCP relay a group host is reachable through
+	// (e.g. "bore.pub"); RelayPort is the public port it holds there.
+	Relay     string `json:"relay,omitempty"`
+	RelayPort int    `json:"relay_port,omitempty"`
 }
 
 func Default() Config {

@@ -3,15 +3,20 @@ package cli
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"log"
+	"math/big"
 	"meshcompute/internal/agent"
 	"meshcompute/internal/config"
 	"meshcompute/internal/dashboard"
+	"meshcompute/internal/relay"
 	"meshcompute/internal/security"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,6 +30,9 @@ func localAddress(host string) bool {
 	ip := net.ParseIP(host)
 	if ip == nil || ip.IsUnspecified() {
 		return false
+	}
+	if unusableIPv6()[ip.String()] {
+		return false // deprecated: the network no longer routes it
 	}
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
@@ -46,6 +54,7 @@ func autoAddress() (address string, public bool, reason string, err error) {
 		return "", false, "", err
 	}
 	var v6, v4 string
+	stale := unusableIPv6()
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
@@ -60,6 +69,9 @@ func autoAddress() (address string, public bool, reason string, err error) {
 				continue
 			}
 			ip := ipnet.IP
+			if stale[ip.String()] {
+				continue
+			}
 			switch {
 			case ip.To4() == nil && ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast():
 				if v6 == "" {
@@ -111,6 +123,8 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 	ttl := 5 * time.Minute
 	auto := false
 	open := false
+	direct := false
+	relayServer := c.Relay
 	port := 7443
 	if err := flags("host", args, func(f *flag.FlagSet) {
 		f.StringVar(&listen, "listen", listen, "literal local address and port")
@@ -121,12 +135,59 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 		f.StringVar(&ui, "ui", ui, "loopback dashboard address")
 		f.DurationVar(&ttl, "ttl", ttl, "invitation expiry")
 		f.BoolVar(&open, "open", false, "open the dashboard in the default browser")
+		f.StringVar(&relayServer, "relay", relayServer, "public TCP relay to host through, e.g. bore.pub (works from any network)")
+		f.BoolVar(&direct, "direct", false, "host directly on this computer's IP instead of a relay")
 	}); err != nil {
 		return err
+	}
+	if direct {
+		relayServer = ""
 	}
 	explicitListen := listen != c.Listen
 	if port < 1 || port > 65535 {
 		return errors.New("port must be between 1 and 65535")
+	}
+	var listener net.Listener
+	var tunnel *relay.Tunnel
+	var session *relay.Session
+	if relayServer != "" {
+		// Relay mode: listen on loopback only and let the relay carry visitors.
+		// Address changes of this computer no longer matter.
+		// The local port is private to this computer; if it is busy, reuse the
+		// previous one or take any free port (the certificate covers IPs only).
+		var l net.Listener
+		var err error
+		for _, candidate := range []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), c.Listen, "127.0.0.1:0"} {
+			if ip := net.ParseIP(hostOf(candidate)); ip == nil || !ip.IsLoopback() {
+				continue
+			}
+			if l, err = net.Listen("tcp", candidate); err == nil {
+				break
+			}
+		}
+		if l == nil {
+			return fmt.Errorf("cannot listen on a local port: %w", err)
+		}
+		listener = l
+		listen = l.Addr().String()
+		defer listener.Close()
+		relayIP, err := resolveRelay(ctx, relayServer)
+		if err != nil {
+			return err
+		}
+		want := c.RelayPort
+		if c.Relay != relayServer || want == 0 {
+			want = randomRelayPort()
+		}
+		tunnel = &relay.Tunnel{Server: relayServer, Port: want, Local: listen, Log: log.New(out, "", log.LstdFlags|log.LUTC)}
+		session, err = openRelay(ctx, tunnel, out)
+		if err != nil {
+			return err
+		}
+		defer session.Close()
+		advertise = "https://" + net.JoinHostPort(relayIP, strconv.Itoa(session.Port))
+		public = true
+		fmt.Fprintf(out, "Relay: %s:%d -> this computer (works from any network; traffic stays end-to-end encrypted).\n", relayServer, session.Port)
 	}
 	// Keep an existing group's address while this computer still owns it, so a
 	// restart does not invalidate invitations or enrolled workers.
@@ -136,7 +197,12 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 	if _, p, err := net.SplitHostPort(c.Listen); keep && err == nil && p != strconv.Itoa(port) && auto {
 		keep = false
 	}
-	if keep {
+	if relayServer != "" {
+		keep = false
+	}
+	if relayServer != "" {
+		// listen and advertise were chosen by the relay above.
+	} else if keep {
 		listen, advertise, public = c.Listen, c.Advertise, c.Public
 		fmt.Fprintf(out, "Resuming group on %s.\n", listen)
 	} else if auto || !explicitListen || unspecified(hostOf(listen)) {
@@ -171,6 +237,10 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 	}
 	next := c
 	next.Listen, next.Advertise, next.Public, next.GroupHost = listen, advertise, public, true
+	next.Relay, next.RelayPort = "", 0
+	if session != nil {
+		next.Relay, next.RelayPort = relayServer, session.Port
+	}
 	if err := next.Validate(); err != nil {
 		return err
 	}
@@ -178,11 +248,14 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 		return errors.New("invitation expiry must be positive and at most 24h")
 	}
 	// Bind before generating a new identity so an occupied address fails cleanly.
-	listener, err := net.Listen("tcp", listen)
-	if err != nil {
-		return err
+	if listener == nil {
+		l, err := net.Listen("tcp", listen)
+		if err != nil {
+			return err
+		}
+		listener = l
+		defer listener.Close()
 	}
-	defer listener.Close()
 	if _, err := os.Lstat(filepath.Join(dir, "identity.json")); os.IsNotExist(err) {
 		if err := security.InitGroup(dir, listen, advertise, public); err != nil {
 			return err
@@ -197,7 +270,7 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 		if !host || !reverse {
 			return errors.New("this directory contains an existing non-group identity; use --home with a new directory for the group")
 		}
-		if c.Listen != listen || c.Advertise != advertise || c.Public != public {
+		if !sameIPs(c.Listen, c.Advertise, listen, advertise) || c.Public != public {
 			// The address is part of the certificate. Re-issue it with the same
 			// group CA instead of stranding the group (mobile/home IPv6 prefixes
 			// change often).
@@ -229,7 +302,9 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 	fmt.Fprintln(output, "Friend on Linux: ./linux.sh join <invitation>")
 	hostIP := hostOf(listen)
 	ip := net.ParseIP(hostIP)
-	if ip != nil && ip.IsLoopback() {
+	if session != nil {
+		fmt.Fprintf(output, "Reachability: public relay %s:%d. Friends on any network can join: no IPv6, firewall or router setup needed.\n", relayServer, session.Port)
+	} else if ip != nil && ip.IsLoopback() {
 		fmt.Fprintln(output, "Loopback host: only this computer can connect. Use --auto to select a reachable address.")
 	} else if ip != nil && ip.To4() != nil && ip.IsPrivate() {
 		_, port, _ := net.SplitHostPort(listen)
@@ -251,6 +326,21 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 	results := make(chan error, 2)
 	go func() { results <- agent.New(dir, next, output).ServeListener(ctx, listener) }()
 	go func() { results <- panel.Serve(ctx) }()
+	if session != nil {
+		// Hold the public port for the life of the host; after a drop the same
+		// port is requested again because invitations and workers refer to it.
+		go func() {
+			err := session.Serve(ctx)
+			if ctx.Err() != nil {
+				return
+			}
+			fmt.Fprintf(output, "Relay connection dropped (%v); reconnecting to keep %s:%d...\n", err, relayServer, session.Port)
+			tunnel.Port = session.Port
+			_ = tunnel.Keep(ctx, func(p int) {
+				fmt.Fprintf(output, "Relay reconnected: %s:%d. Friends reconnect automatically.\n", relayServer, p)
+			})
+		}()
+	}
 	first := <-results
 	cancel()
 	second := <-results
@@ -369,4 +459,65 @@ func joinGroup(ctx context.Context, dir string, c config.Config, args []string, 
 	}
 	fmt.Fprintln(out, "Starting the worker. Keep this window open; press Ctrl-C to stop.")
 	return agent.New(dir, c, out).Serve(ctx)
+}
+
+// resolveRelay returns the relay's IPv4 address; invitations carry literal IPs.
+func resolveRelay(ctx context.Context, server string) (string, error) {
+	if ip := net.ParseIP(server); ip != nil {
+		return ip.String(), nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", server)
+	if err != nil || len(ips) == 0 {
+		return "", fmt.Errorf("cannot find relay %s; check the internet connection, or host without a relay using --direct", server)
+	}
+	return ips[0].String(), nil
+}
+
+// randomRelayPort picks a public port for a new group; it is saved and reused.
+func randomRelayPort() int {
+	n, err := rand.Int(rand.Reader, big.NewInt(40000))
+	if err != nil {
+		return 0
+	}
+	return 20000 + int(n.Int64())
+}
+
+// openRelay claims the group's public port. A port still held by this host's
+// previous run is released by the relay within seconds, so it is retried
+// before falling back to a new port (which would require new invitations).
+func openRelay(ctx context.Context, t *relay.Tunnel, out io.Writer) (*relay.Session, error) {
+	for attempt := 1; ; attempt++ {
+		s, err := t.Open(ctx)
+		if err == nil {
+			return s, nil
+		}
+		if !errors.Is(err, relay.ErrPortInUse) || t.Port == 0 {
+			return nil, fmt.Errorf("%w\n  check the internet connection, or host without a relay using --direct", err)
+		}
+		if attempt >= 6 {
+			fmt.Fprintf(out, "Relay port %d is taken by someone else; choosing a new one (send friends a new invitation).\n", t.Port)
+			t.Port = randomRelayPort()
+			attempt = 0
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+// sameIPs reports whether two listen/advertise pairs use the same IPs. The
+// group certificate names IPs only, so a port change needs no new certificate.
+func sameIPs(oldListen, oldAdvertise, listen, advertise string) bool {
+	host := func(endpoint string) string {
+		if u, err := url.Parse(endpoint); err == nil && u.Host != "" {
+			return u.Hostname()
+		}
+		return hostOf(endpoint)
+	}
+	return hostOf(oldListen) == hostOf(listen) && host(oldAdvertise) == host(advertise)
 }

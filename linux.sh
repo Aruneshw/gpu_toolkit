@@ -18,6 +18,10 @@ HOST_HOME="${MESHCOMPUTE_HOST_HOME:-$HOME/.meshcompute-auto}"
 WORKER_HOME="${MESHCOMPUTE_WORKER_HOME:-$HOME/.meshcompute-worker}"
 PORT="${MESHCOMPUTE_PORT:-7443}"
 TTL="${MESHCOMPUTE_TTL:-1h}"
+# Public TCP relay so friends on any network can connect; set
+# MESHCOMPUTE_RELAY=none to host directly on this computer's IP instead.
+RELAY="${MESHCOMPUTE_RELAY-bore.pub}"
+case "$RELAY" in none|off|direct) RELAY="" ;; esac
 
 if [ -t 1 ]; then
   B=$'\e[1m'; G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; C=$'\e[36m'; N=$'\e[0m'
@@ -122,13 +126,20 @@ firewall_hint() {
 }
 
 do_host() {
-  info "Starting your group host on port $PORT (state: $HOST_HOME)"
-  firewall_hint
+  local reach=(--relay "$RELAY")
+  if [ -z "$RELAY" ]; then
+    reach=(--direct --auto --port "$PORT")
+    firewall_hint
+  fi
+  info "Starting your group host (state: $HOST_HOME)"
+  if [ -n "$RELAY" ]; then
+    say "   Friends connect through the public relay $RELAY: works from any network."
+  fi
   say "   The dashboard opens in your browser: live GPUs/VRAM of every laptop,"
   say "   ${B}Invite a friend${N} button, and a built-in terminal."
   say "   Keep this window open. Press Ctrl-C to stop the group."
   say ""
-  exec "$BIN" --home "$HOST_HOME" host --auto --port "$PORT" --ttl "$TTL" --open
+  exec "$BIN" --home "$HOST_HOME" host "${reach[@]}" --ttl "$TTL" --open
 }
 
 do_invite() {

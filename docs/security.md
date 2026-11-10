@@ -68,6 +68,19 @@ request, including requests on already-open TLS connections. Missing, corrupt,
 or insecure state fails closed. Revocation does not cancel already-authorized
 in-flight requests or streams.
 
+## Public relay
+
+Group hosts use the public TCP relay bore.pub by default. The relay only copies
+TCP bytes between a visitor and the host's loopback listener; enrollment and
+every later request use the same TLS 1.3 mutual authentication with the exact
+host certificate pin as a direct connection, so the relay cannot read, alter
+or forge traffic without the pin check failing. The relay operator can observe
+connection metadata (IP addresses, timing, byte counts) and can deny service.
+Anyone may reach the public port, exactly as with a public IP: they meet the
+same unauthenticated `/enroll` endpoint (single-use, hashed, expiring tokens)
+and mutual-TLS-only routes. Run your own bore server with `--relay HOST`, or
+host directly with `--direct`, if third-party metadata exposure is unacceptable.
+
 ## Localhost dashboard
 
 `meshcompute ui` starts a separate HTTP server bound to an explicit loopback IP.

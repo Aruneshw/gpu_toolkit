@@ -248,3 +248,25 @@ real Windows, and a second physical computer on another network was not used.
   Fixed in `install-prebuilt.ps1`; `windows.cmd` was replaced by `win.bat`,
   and CI now runs install, two upgrades, host, invite and join through
   `win.bat` with Windows PowerShell 5.1 on a real Windows runner.
+
+### Public relay (2026-11-10)
+
+Cause of the friend's `dial tcp [2409:…]:7443: i/o timeout`: the host was bound
+to an IPv6 address the kernel had already marked deprecated. The Jio hotspot
+rotates the /64 prefix every few minutes (8 prefixes in about two hours; 7 with
+`preferred_lft 0`), so a directly advertised IPv6 address stops being routed
+within minutes. `host --auto` now skips deprecated addresses, and hosting uses
+the bore relay by default.
+
+- `internal/relay` implements the bore v0.5 client protocol in Go; tests run a
+  protocol-faithful fake server (grant, heartbeat, visitor forwarding, port in
+  use, reconnect reclaiming the same port).
+- Live through bore.pub from this laptop: host registered `bore.pub:57745`,
+  a separate worker identity joined via `https://159.223.110.159:57745`
+  (IPv4), connected, and the dashboard showed 2/2 nodes and 2 GPUs. Restarting
+  the host reclaimed the same port with no certificate change, and the worker
+  reconnected by itself. A busy local port fell back to the previous one.
+- A worker whose local port is busy now runs outbound-only
+  (`TestWorkerConnectsWhenLocalPortBusy`).
+- Not verified: the friend's Windows PC joining through the relay (pending
+  their next attempt with a new key).

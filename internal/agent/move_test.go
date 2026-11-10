@@ -123,3 +123,61 @@ func TestHostAddressChangeAndRejoin(t *testing.T) {
 	}
 	cancel()
 }
+
+// A group worker keeps working when its optional local port is taken, e.g. by
+// a group host on the same PC or another program.
+func TestWorkerConnectsWhenLocalPortBusy(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hostDir := filepath.Join(t.TempDir(), "host")
+	workerDir := filepath.Join(t.TempDir(), "worker")
+	c := config.Default()
+	l := listen(t)
+	c.Listen, c.Advertise, c.GroupHost = l.Addr().String(), "https://"+l.Addr().String(), true
+	if err := security.InitGroup(hostDir, c.Listen, c.Advertise, false); err != nil {
+		t.Fatal(err)
+	}
+	startAgent(t, ctx, hostDir, c, l)
+	code, err := security.Pair(hostDir, c.Advertise, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := security.JoinHost(ctx, workerDir, code, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := security.NodeID(workerDir)
+	busy := listen(t) // occupied for the whole test
+	wc := config.Default()
+	wc.Listen, wc.Advertise = busy.Addr().String(), "https://"+busy.Addr().String()
+	done := make(chan error, 1)
+	go func() { done <- agent.New(workerDir, wc, io.Discard).Serve(ctx) }()
+	client, err := security.Client(hostDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseIdleConnections()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		r, e := client.Get(c.Advertise + "/v1/workers/" + id + "/v1/ping")
+		if e == nil {
+			body, _ := io.ReadAll(r.Body)
+			r.Body.Close()
+			if r.StatusCode == 200 && string(body) == "pong\n" {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("worker with a busy local port did not connect")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not stop")
+	}
+}

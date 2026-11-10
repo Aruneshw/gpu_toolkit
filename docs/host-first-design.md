@@ -86,6 +86,32 @@ is not pooled across computers.
 
 ## Connectivity
 
+### Default: public relay (works from any network)
+
+`linux.sh` and `win.bat` host through the public TCP relay **bore.pub**
+(`host --relay bore.pub`). The host listens on loopback only and keeps one
+outbound connection to the relay, which assigns a public port such as
+`bore.pub:57745`. Invitations name that address. Consequences:
+
+- Friends need only ordinary outbound internet (IPv4 is enough). No IPv6,
+  port forwarding, router access or inbound firewall rule on either side.
+- The host's own IP may change at will (mobile hotspots rotate IPv6 prefixes
+  every few minutes): the public address stays the same.
+- The public port is saved (`relay_port` in config.json) and requested again
+  on every restart, so invitations and enrolled workers keep working. Workers
+  reconnect automatically after a relay drop or host restart.
+- Security is unchanged: TLS 1.3 mutual authentication with the pinned host
+  certificate runs end to end, so the relay forwards ciphertext only. It does
+  see connection metadata (IP addresses, timing, volume). bore.pub is a free
+  community service with no availability guarantee; `--relay HOST` selects
+  another bore-compatible server (for example one you run yourself with
+  `bore server`).
+
+Set `MESHCOMPUTE_RELAY=none` (or run `host --direct`) to host on this
+computer's own IP as described below.
+
+### Direct hosting
+
 The creator must have a reachable IP and TCP port. Public IPv6 requires IPv6 on
 both ends and a suitable inbound firewall rule on the creator's network. IPv4
 requires a public address plus a port forward when behind a router. Carrier
@@ -93,7 +119,8 @@ NAT, blocked IPv6, sleeping hosts, and changing IPs can prevent connection.
 An invitation establishes trust, not an internet route. MeshCompute does not
 claim to bypass these restrictions or automatically change router/firewall rules.
 
-`host --auto` prints the chosen address, whether the friend needs port
+`host --auto` never chooses an IPv6 address the kernel marks deprecated
+(the network already moved to a newer prefix). It prints the chosen address, whether the friend needs port
 forwarding, and the port to allow. `join` now distinguishes the two failure
 cases: it first tests TCP reachability of the address in the invitation and
 reports "cannot reach the group host" separately from "the host was reachable

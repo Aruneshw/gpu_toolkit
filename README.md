@@ -58,7 +58,10 @@ Download the package for your system from
 
 The menus install MeshCompute when needed (bundled binary, or the latest
 release with its SHA-256 checked), generate keys automatically, and open the
-dashboard in your browser. Pasting the whole command a friend sent also works:
+dashboard in your browser. Hosting goes through the public relay **bore.pub**
+by default, so friends on any network can join without IPv6, port forwarding or
+firewall changes, and keys keep working when your own IP changes. Traffic stays
+end-to-end encrypted; see [Creator-hosted groups](docs/host-first-design.md#connectivity). Pasting the whole command a friend sent also works:
 the key is always the last word. The source checkout includes the same
 `linux.sh` and `win.bat`.
 

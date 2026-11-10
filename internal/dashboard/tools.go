@@ -89,6 +89,8 @@ func (r *Remote) Info() HostInfo {
 	}
 	ip := net.ParseIP(u.Hostname())
 	switch {
+	case r.c.Relay != "":
+		info.Reachability = "Public relay " + r.c.Relay + ":" + u.Port() + ": friends on any network can join (no IPv6, firewall or router setup). Traffic is end-to-end encrypted; the relay only forwards it."
 	case ip == nil:
 	case ip.IsLoopback():
 		info.Reachability = "Loopback address: only this computer can join. Restart with: meshcompute host --auto"

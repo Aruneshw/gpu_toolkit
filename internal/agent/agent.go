@@ -305,6 +305,15 @@ func (a *Agent) Handler() http.Handler {
 func (a *Agent) Serve(ctx context.Context) error {
 	listener, err := net.Listen("tcp", a.c.Listen)
 	if err != nil {
+		// A group worker only needs its outbound connection to the host; the
+		// local listener is an optional status API. Do not fail because some
+		// other program (or a group host on the same PC) already uses the port.
+		if host, reverse, endpoint, gerr := security.Group(a.dir); gerr == nil && reverse && !host {
+			fmt.Fprintf(a.log.Writer(), "Note: local port %s is busy (%v); continuing without the local status API.\n", a.c.Listen, err)
+			a.log.Print("event=agent_start transport=mutual_tls mode=outbound_only")
+			a.connectLoop(ctx, endpoint)
+			return nil
+		}
 		return err
 	}
 	return a.ServeListener(ctx, listener)
