@@ -216,7 +216,7 @@ jobs:
           Copy-Item scripts\windows-gpu-setup.ps1 "$pkg\scripts"
           $binary = Join-Path $env:LOCALAPPDATA 'meshcompute\bin\meshcompute.exe'
           function Pack([string]$ver) {
-            go build -trimpath -ldflags "-X main.version=$ver" -o "$pkg\meshcompute-windows-amd64.exe" ./cmd/meshcompute
+            go -C "$env:GITHUB_WORKSPACE" build -trimpath -ldflags "-X main.version=$ver" -o "$pkg\meshcompute-windows-amd64.exe" ./cmd/meshcompute
             if ($LASTEXITCODE -ne 0) { throw 'build failed' }
             $h = (Get-FileHash "$pkg\meshcompute-windows-amd64.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
             "$h  meshcompute-windows-amd64.exe" | Set-Content -Encoding ascii "$pkg\SHA256SUMS"
