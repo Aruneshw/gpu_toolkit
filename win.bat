@@ -3,6 +3,9 @@ rem MeshCompute for Windows: double-click this file.
 rem It installs or updates MeshCompute, then lets you generate a key (host)
 rem or join a friend with their key. Also: win.bat host ^| join KEY ^| reconnect ^| invite ^| gpu
 setlocal
+rem Started from PowerShell 7, Windows PowerShell 5.1 would inherit 7s module
+rem path and fail to load built-in cmdlets (Get-FileHash). Use its own defaults.
+set "PSModulePath="
 title MeshCompute
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0installers\menu-windows.ps1" %*
 set "MC_RC=%ERRORLEVEL%"
