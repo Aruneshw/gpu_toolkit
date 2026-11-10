@@ -291,6 +291,17 @@ jobs:
           MESHCOMPUTE_PORT: "17443"
         run: |
           set -eu
+          report() {
+            rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "::error title=linux.sh end-to-end::exit $rc near line ${LINENO}"
+              for f in menu.log host.log invite.log join.log; do
+                [ -f "$f" ] && echo "::error title=$f::$(tail -c 3000 "$f" | tr '\n' '|')"
+              done
+            fi
+            kill $(jobs -p) 2>/dev/null || true
+          }
+          trap report EXIT
           bash -n linux.sh
           # A stale build without the newest flags must never be used.
           mkdir -p bin && printf '#!/bin/sh\necho stale\n' > bin/meshcompute && chmod +x bin/meshcompute
