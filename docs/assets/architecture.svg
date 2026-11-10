@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 380" width="960" height="380" role="img" aria-label="How MeshCompute connects friends' laptops to the host through a public relay">
+  <title>How MeshCompute connects laptops</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#7ee2a8"/>
+    </marker>
+  </defs>
+  <rect width="960" height="380" rx="18" fill="#0d1117"/>
+  <g>
+    <rect x="28" y="40" width="250" height="118" rx="14" fill="#151b23" stroke="#3a4656" stroke-width="1.5"/>
+    <text x="48" y="78" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="19" font-weight="700" fill="#e6edf3">Friend's laptop</text>
+    <text x="48" y="104" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" fill="#8b98a8">Windows · NVIDIA GPU</text><text x="48" y="126" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" fill="#8b98a8">worker + optional llama.cpp</text>
+  </g>
+  <g>
+    <rect x="28" y="200" width="250" height="118" rx="14" fill="#151b23" stroke="#3a4656" stroke-width="1.5"/>
+    <text x="48" y="238" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="19" font-weight="700" fill="#e6edf3">Friend's laptop</text>
+    <text x="48" y="264" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" fill="#8b98a8">Linux · any GPU</text><text x="48" y="286" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" fill="#8b98a8">worker</text>
+  </g>
+  <circle cx="480" cy="180" r="78" fill="#151b23" stroke="#3a4656" stroke-width="1.5"/>
+  <text x="480" y="172" text-anchor="middle" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="20" font-weight="700" fill="#e6edf3">bore.pub</text>
+  <text x="480" y="196" text-anchor="middle" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14" fill="#8b98a8">public TCP relay</text>
+  <text x="480" y="216" text-anchor="middle" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13" fill="#8b98a8">forwards ciphertext</text>
+  <g>
+    <rect x="682" y="92" width="250" height="176" rx="14" fill="#151b23" stroke="#7ee2a8" stroke-width="2.5"/>
+    <text x="702" y="130" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="19" font-weight="700" fill="#e6edf3">Your laptop</text>
+    <text x="702" y="156" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" fill="#8b98a8">group host, loopback only</text><text x="702" y="178" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" fill="#8b98a8">dashboard · terminal</text><text x="702" y="200" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" fill="#8b98a8">invitations</text>
+  </g>
+  <g transform="translate(876 100) scale(0.36)">
+    <g stroke="#7ee2a8" stroke-width="4" stroke-linecap="round"><line x1="42" y1="8" x2="42" y2="20"/><line x1="42" y1="100" x2="42" y2="112"/><line x1="8" y1="42" x2="20" y2="42"/><line x1="100" y1="42" x2="112" y2="42"/><line x1="60" y1="8" x2="60" y2="20"/><line x1="60" y1="100" x2="60" y2="112"/><line x1="8" y1="60" x2="20" y2="60"/><line x1="100" y1="60" x2="112" y2="60"/><line x1="78" y1="8" x2="78" y2="20"/><line x1="78" y1="100" x2="78" y2="112"/><line x1="8" y1="78" x2="20" y2="78"/><line x1="100" y1="78" x2="112" y2="78"/></g>
+    <rect x="20" y="20" width="80" height="80" rx="18" fill="#0b1410" stroke="#7ee2a8" stroke-width="3.5"/>
+    <g stroke="#7ee2a8" stroke-width="3"><line x1="60" y1="60" x2="60" y2="36"/><line x1="60" y1="60" x2="39" y2="73"/><line x1="60" y1="60" x2="81" y2="73"/></g>
+    <g fill="#0b1410" stroke="#7ee2a8" stroke-width="3"><circle cx="60" cy="36" r="7.5"/><circle cx="39" cy="73" r="7.5"/><circle cx="81" cy="73" r="7.5"/></g>
+    <circle cx="60" cy="60" r="10" fill="#7ee2a8"/></g>
+  <g stroke="#7ee2a8" stroke-width="2.5" fill="none" marker-end="url(#arrow)">
+    <path d="M280 100 C 340 100, 360 150, 404 166"/>
+    <path d="M280 258 C 340 258, 360 210, 404 194"/>
+    <path d="M560 180 L 678 180"/>
+  </g>
+  <text x="300" y="80" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13" fill="#7ee2a8">outbound TLS 1.3</text>
+  <text x="300" y="296" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13" fill="#7ee2a8">mutual auth, pinned</text>
+  <text x="572" y="166" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13" fill="#7ee2a8">same encrypted</text>
+  <text x="572" y="203" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13" fill="#7ee2a8">connection</text>
+  <text x="480" y="352" text-anchor="middle" font-family="'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" fill="#8b98a8">No inbound ports on any laptop · keys keep working when IP addresses change · each prompt runs on one chosen GPU</text>
+</svg>

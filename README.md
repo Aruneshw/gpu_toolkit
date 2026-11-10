@@ -82,24 +82,7 @@ sent also works: the key is always the last word. Run from a source checkout,
 
 ## How it works
 
-```mermaid
-flowchart LR
-    subgraph F1["Friend's laptop (Windows)"]
-        W1["worker + GPU<br/>llama.cpp (optional)"]
-    end
-    subgraph F2["Friend's laptop (Linux)"]
-        W2["worker + GPU"]
-    end
-    R(("bore.pub<br/>public TCP relay"))
-    subgraph H["Your laptop (host)"]
-        A["group host<br/>loopback :7443"]
-        D["dashboard<br/>127.0.0.1:8081"]
-    end
-    W1 -- "outbound TLS 1.3, mutual auth" --> R
-    W2 -- "outbound TLS 1.3, mutual auth" --> R
-    R -- "relayed ciphertext" --> A
-    A --- D
-```
+<p align="center"><img alt="Friends' laptops connect outbound through the bore.pub relay to your laptop, which runs the group host and dashboard" src="docs/assets/architecture.svg" width="860"></p>
 
 1. `host` creates a private certificate authority for your group, listens on
    loopback and registers a public port on the relay (saved and reused on
