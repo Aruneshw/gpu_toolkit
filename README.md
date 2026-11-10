@@ -1,51 +1,70 @@
-# MeshCompute
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
+    <img alt="MeshCompute" src="docs/assets/logo-light.svg" width="520">
+  </picture>
+</p>
 
-MeshCompute is a conservative, single-binary tool for running authenticated
-inference on separate devices that each own their models. It is not a
-model-parallel distributed runtime: a request is executed by one local
-`llama.cpp` server on one node, chosen explicitly or by bounded admission.
+<p align="center">
+  <a href="https://github.com/Aruneshw/gpu_toolkit/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Aruneshw/gpu_toolkit/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/Aruneshw/gpu_toolkit/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/Aruneshw/gpu_toolkit?color=2ea44f"></a>
+  <img alt="Go" src="https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white">
+  <img alt="Platforms" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows-555">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
+</p>
 
-The CLI, HTTPS agent and localhost dashboard share one repository and one state
-directory. There is no remote administration, no model download, and no
-automatic retry or mid-generation placement change. The dashboard aggregates
-telemetry and streams tokens from one selected node; it does not create a
-shared VRAM pool.
+<p align="center">
+  <b>Bring your friends' laptops and GPUs together in one dashboard, from anywhere.</b><br>
+  One host, any number of friends, no VPN, no port forwarding, no IPv6 required.
+</p>
 
-## Status and scope
+---
 
-- Implemented and unit-tested: configuration, hardware discovery, TLS
-  enrollment, single-use invitations, mutual authentication, revocation,
-  model registry, llama.cpp HTTP adapter (including SSE streaming),
-  memory/network admission, scheduler simulation, CLI, token-protected
-  localhost dashboard, Linux/Windows installers, and CI.
-- Verified on this machine: `go test ./...`, `go test -race ./...`, offline
-  builds, Linux/Windows/arm64 cross-builds, two-home TLS enrollment/status/
-  revocation, the Linux installer, real CPU-only GGUF inference, and
-  end-to-end dashboard token streaming.
-- **Not verified here:** CUDA/GPU execution, a physical two-machine VPN,
-  Windows deployment beyond CI tests, or llama.cpp RPC. Cross-compiling is not
-  runtime testing. See [docs/validation.md](docs/validation.md).
+## What it does
 
-RPC is deliberately not built, launched, discovered, or claimed. Sending work to
-one authenticated remote node that runs its own local model is remote
-single-node inference, not tensor splitting.
+- **One dashboard for every GPU.** Each friend's laptop joins your group and
+  shows up live: GPU model, VRAM used/free, utilisation, RAM, models and
+  backend state, with totals across all laptops.
+- **Joining is one key.** You click *Generate invitation*; your friend pastes
+  the key into `win.bat` or `linux.sh`. Their computer creates its own key pair
+  automatically. Keys are single use and expire.
+- **Works from any network.** By default the host goes through the public relay
+  **bore.pub**, so it does not matter that phone hotspots rotate IPv6 every few
+  minutes, that a campus is behind CGNAT, or that Wi-Fi isolates clients.
+- **Run AI on any member.** Send a prompt to a chosen laptop's `llama.cpp`
+  backend and stream the answer back into the dashboard.
+- **Built-in terminal.** A real Linux shell in the dashboard (colours, Ctrl-C,
+  tab completion, `vim`, `htop`), with buttons for *New invitation*, *Status*,
+  *Doctor* and `nvidia-smi`.
+- **Secure by construction.** TLS 1.3 mutual authentication with a pinned host
+  certificate runs end to end, even through the relay. One Go binary using only
+  the standard library: no runtime downloads, no services, no admin rights.
 
-## Requirements
-
-- Go 1.24 or newer to build from source (standard library only; no modules to
-  download). The prebuilt Windows installer does **not** require Go.
-- A separately built and compatible `llama-server` for real inference.
-- Linux amd64/arm64 or Windows amd64. macOS and AMD/Intel GPUs are not validated.
-- For multi-machine use: a reachable creator-host address (public IP is opt-in),
-  or a private LAN/VPN for legacy direct peers. MeshCompute does not change
-  firewalls or elevate.
-
-## Install
-
-### Easiest: one script with a menu
+## Quick start (2 minutes)
 
 Download the package for your system from
-[Releases](https://github.com/Aruneshw/gpu_toolkit/releases/latest) and extract it.
+[**Releases**](https://github.com/Aruneshw/gpu_toolkit/releases/latest) and
+extract it (`meshcompute-windows-amd64.zip` or `meshcompute-linux-amd64.tar.gz`).
+
+**You (the host):**
+
+| Linux | Windows |
+| --- | --- |
+| `./linux.sh` and choose **1** | double-click `win.bat` and choose **1** |
+
+The dashboard opens in your browser and a key is printed (and copied to the
+clipboard on Windows). Keep the window open and send the key privately.
+
+**Your friend:**
+
+| Windows | Linux |
+| --- | --- |
+| double-click `win.bat`, choose **2**, paste the key | `./linux.sh join <KEY>` |
+
+Their laptop appears on your dashboard within seconds. Next time they only need
+option **3 (Reconnect)**; the key keeps working across restarts and IP changes.
+
+All menu options:
 
 | | Linux | Windows |
 | --- | --- | --- |
@@ -54,36 +73,92 @@ Download the package for your system from
 | 2. Join with a friend's key | `./linux.sh join <KEY>` | option 2 (or `.\join.cmd <KEY>`) |
 | 3. Reconnect after closing the window | `./linux.sh reconnect` | option 3 |
 | 4. Another key for your running group | `./linux.sh invite` | option 4 |
-| 5. Install the GPU AI backend (llama.cpp + small model) | see docs/backend.md | option 5 |
+| 5. Install the GPU AI backend (llama.cpp + small model) | see [docs/backend.md](docs/backend.md) | option 5 |
 
-The menus install MeshCompute when needed (bundled binary, or the latest
-release with its SHA-256 checked), generate keys automatically, and open the
-dashboard in your browser. Hosting goes through the public relay **bore.pub**
-by default, so friends on any network can join without IPv6, port forwarding or
-firewall changes, and keys keep working when your own IP changes. Traffic stays
-end-to-end encrypted; see [Creator-hosted groups](docs/host-first-design.md#connectivity). Pasting the whole command a friend sent also works:
-the key is always the last word. The source checkout includes the same
-`linux.sh` and `win.bat`.
+The launchers install or update MeshCompute when needed (the bundled binary, or
+the latest release with its SHA-256 checked). Pasting the whole command a friend
+sent also works: the key is always the last word. Run from a source checkout,
+`linux.sh` rebuilds the binary first.
 
-### Ready-to-run packages and creator-hosted groups
+## How it works
 
-Download the Windows ZIP or Linux tarball from
-[Releases](https://github.com/Aruneshw/gpu_toolkit/releases). On Windows, extract
-the ZIP and run `.\join.cmd` in ordinary PowerShell. It installs, then prompts
-for your friend's invitation; Git and Go are not needed. The GitHub source ZIP
-also contains `join.cmd`, which fetches the published executable automatically.
-
-The person inviting friends runs their own group host:
-
-```sh
-meshcompute --home ./my-group host --listen '[YOUR_PUBLIC_IPV6]:7443' --public
+```mermaid
+flowchart LR
+    subgraph F1["Friend's laptop (Windows)"]
+        W1["worker + GPU<br/>llama.cpp (optional)"]
+    end
+    subgraph F2["Friend's laptop (Linux)"]
+        W2["worker + GPU"]
+    end
+    R(("bore.pub<br/>public TCP relay"))
+    subgraph H["Your laptop (host)"]
+        A["group host<br/>loopback :7443"]
+        D["dashboard<br/>127.0.0.1:8081"]
+    end
+    W1 -- "outbound TLS 1.3, mutual auth" --> R
+    W2 -- "outbound TLS 1.3, mutual auth" --> R
+    R -- "relayed ciphertext" --> A
+    A --- D
 ```
 
-The host prints an invitation and its local dashboard link. Each creator hosts
-an independent group; workers connect outbound and appear automatically.
-The creator's IP/port must be reachable from the friends' networks. See
-[Creator-hosted groups](docs/host-first-design.md) for IPv4 forwarding, Linux,
-Windows, reconnection, inference setup, and network requirements.
+1. `host` creates a private certificate authority for your group, listens on
+   loopback and registers a public port on the relay (saved and reused on
+   every restart).
+2. An invitation carries that address, the CA and the exact host-certificate
+   fingerprint plus a single-use token.
+3. `join` makes a key pair on the friend's computer, enrolls over pinned TLS
+   and then keeps outbound connections open. The host sends status and
+   inference requests down those connections; workers never accept inbound
+   traffic and cannot reach each other.
+4. The relay only copies encrypted bytes. Use `host --direct` (or
+   `MESHCOMPUTE_RELAY=none`) to host on your own IP instead. See
+   [Creator-hosted groups](docs/host-first-design.md#connectivity).
+
+## Honest scope
+
+- **VRAM is shown together, not merged.** Totals add up every laptop's GPUs so
+  you see the whole group at once, but each prompt runs entirely on **one**
+  selected laptop. A model must fit on that laptop's GPU; models are not split
+  across machines (llama.cpp RPC is deliberately disabled).
+- **Inference needs a backend on the worker.** Telemetry works out of the box;
+  running prompts needs `llama-server` and a registered GGUF on that laptop
+  (`win.bat` option 5 sets this up on Windows with an NVIDIA GPU).
+- **Tested:** unit and race tests; Linux and real-Windows CI that install,
+  upgrade, host, generate a key and join through `linux.sh`/`win.bat`; live
+  joins over IPv6 and through bore.pub; real CPU GGUF inference. **Not yet
+  established:** CUDA inference on a friend's GPU end to end. Details in
+  [docs/validation.md](docs/validation.md).
+
+## Requirements
+
+- Linux amd64/arm64 or Windows 10/11 amd64. macOS and AMD/Intel GPUs are not
+  validated. NVIDIA GPUs are detected through `nvidia-smi`.
+- Outbound internet access on every computer (any network; IPv4 is enough).
+- For inference: a compatible `llama-server` and a licensed GGUF model on the
+  worker. Nothing is downloaded silently.
+- To build from source: Go 1.24 or newer (standard library only, builds
+  offline). The release packages need no Go.
+
+## Install
+
+### Manual commands (without the launchers)
+
+The launchers above only wrap these commands:
+
+```sh
+# host: relay by default; prints a key and the dashboard link
+meshcompute --home ~/.meshcompute-group host --relay bore.pub --ttl 1h --open
+meshcompute --home ~/.meshcompute-group pair --ttl 1h      # another key
+
+# friend: enroll with the key and stay connected (reconnects automatically)
+meshcompute join <KEY>
+meshcompute start                                          # later: reconnect
+```
+
+Without a relay, `host --direct --auto` picks this computer's global IPv6 (or a
+private IPv4 that needs a router port forward). Each creator hosts an
+independent group. See [Creator-hosted groups](docs/host-first-design.md) for
+addresses, reconnection, inference setup and network requirements.
 
 ### Source and manual installation
 
@@ -124,8 +199,9 @@ make build        # bin/meshcompute
 make verify       # formatting, vet, tests, cross-builds, offline build
 ```
 
-## Quick start
+## Advanced: private LAN/VPN cluster
 
+The original direct-peer mode for machines on one private network or VPN.
 Coordinator (machine A, e.g. a private VPN IP `100.64.0.10`):
 
 ```sh
@@ -176,7 +252,7 @@ meshcompute ui
 Open the printed URL. The token is exchanged for an HttpOnly, SameSite=Strict
 cookie and removed from the address bar. The page shows every configured node's
 GPU, VRAM, RAM, models and backend health, and can stream a prompt to one
-selected node. See [Dashboard scope](#dashboard-scope).
+selected node. See [Honest scope](#honest-scope).
 
 Revoke a worker locally on the coordinator:
 
@@ -214,34 +290,22 @@ selected node to advertise exactly the requested model and enough context. It
 never falls back silently after generation starts. `simulate` prints clearly
 labeled synthetic scheduling examples and performs no inference.
 
-## Dashboard features
+## Dashboard
 
+`host` starts it automatically; on any enrolled node `meshcompute ui --open`
+starts one too. It listens on `127.0.0.1` only and opens with a one-time token.
+
+- **Totals and inventory:** nodes, GPUs, VRAM total/free, RAM, models, and a
+  per-GPU table (used, free, utilisation, driver) for every laptop.
 - **Invite a friend:** choose an expiry (30 minutes to 24 hours) and click
-  *Generate invitation*. The panel shows the exact one-line command your friend
-  pastes (Windows first install, Windows already installed, Linux) with copy
-  buttons and a live countdown. The key pair is generated automatically on the
-  friend's computer during `join`; nobody types keys by hand.
-- **Terminal:** a real shell (xterm.js on a Linux pseudo-terminal: colours,
-  Ctrl-C, tab completion, `vim`, `htop`, resizing). It survives page reloads,
-  has `meshcompute` on PATH with this group's `MESHCOMPUTE_HOME`, and has quick
-  buttons for *New invitation*, *Status*, *Models*, *Doctor* and `nvidia-smi`.
-  It runs on the dashboard's own computer only. Linux hosts only.
-
-## Dashboard scope
-
-`meshcompute ui` is a control panel, not a distributed GPU runtime:
-
-- Telemetry from healthy nodes is summed for display only. “VRAM total” is the
-  sum of each GPU's memory, not one addressable pool.
-- A prompt is dispatched to exactly one selected node. The model must already
-  be registered and loaded there; nothing is sharded or migrated mid-generation.
-- Tokens stream to the browser over server-sent events. Stopping the browser
-  request cancels that generation; failures are reported and never retried.
-- The server binds loopback only, requires a random 256-bit token, validates
-  Host and Origin, and serves a strict CSP. There is no remote administration.
-
-True cross-device model splitting is still not implemented; llama.cpp RPC
-remains disabled.
+  *Generate invitation*: copy-ready commands for Windows and Linux plus a live
+  countdown.
+- **Run inference on one node:** pick a ready laptop and model, stream tokens
+  back, stop at any time. Failures are reported and never retried elsewhere.
+- **Terminal (Linux hosts):** a real shell on this computer (xterm.js on a
+  pseudo-terminal) that survives page reloads, with `meshcompute` on PATH and
+  quick buttons for *New invitation*, *Status*, *Models*, *Doctor* and
+  `nvidia-smi`. It never opens a shell on a friend's computer.
 
 ## Configuration and commands
 
@@ -270,6 +334,10 @@ Read [docs/security.md](docs/security.md) before deployment. Key points:
   changes the trust root.
 - TLS 1.3 mutual authentication, pinned coordinator leaf, fixed private/loopback
   IP endpoints, proxies and redirects disabled.
+- Through the public relay, traffic stays TLS 1.3 with mutual authentication
+  and the pinned host certificate; the relay sees only ciphertext and
+  connection metadata. Use `--relay` with your own bore server, or `--direct`,
+  if that metadata exposure is unacceptable.
 - The local filesystem is the administrative authority. There are no remote
   administrative routes and no HTTP enrollment fallback.
 - The dashboard binds `127.0.0.1` only, requires a 256-bit token, rejects

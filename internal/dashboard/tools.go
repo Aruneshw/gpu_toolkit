@@ -169,6 +169,7 @@ var staticTypes = map[string]string{
 	".js":  "text/javascript; charset=utf-8",
 	".css": "text/css; charset=utf-8",
 	".txt": "text/plain; charset=utf-8",
+	".svg": "image/svg+xml",
 }
 
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
