@@ -143,19 +143,47 @@ versions. CUDA runtime DLLs and driver must be available. Cross-compiling this
 Go toolkit neither builds llama.cpp nor installs GPU dependencies; Windows
 runtime, CPU/GPU compatibility and performance have not been validated here.
 
-## Experimental RPC is not implemented distributed execution
+## Pooled GPUs through llama.cpp RPC
 
-Upstream names the RPC binary `ggml-rpc-server`, builds it with
-`-DGGML_RPC=ON`, connects from llama-cli/llama-server with `--rpc`, and supports
-`--tensor-split` for proportions. Its current README explicitly calls RPC
-fragile, insecure proof-of-concept software and warns never to run it on an open
-network or in a sensitive environment. A VPN does not fix unsafe parsers.
+Upstream ships an RPC worker (`ggml-rpc-server`, formerly `rpc-server`; built
+with `-DGGML_RPC=ON`) and `llama-server --rpc host:port,...`, which offloads a
+model's layers to those workers. Upstream calls this backend experimental and
+warns never to run the RPC server on an open network: it has no
+authentication and its parsers are not hardened.
 
-This toolkit does not build, start, expose, discover, configure or verify RPC
-workers; does not claim verified model-parallel/distributed execution; and does
-not aggregate unrelated GPUs as unified VRAM. The launcher removes ambient
-LLAMA_* and GGML_RPC* settings. Sending a job to one authenticated node that
-runs its own local model is remote single-node inference, not tensor splitting.
+MeshCompute uses it as follows, so that warning is respected:
+
+- **Worker.** On `join`/`start`, the agent looks for the RPC server
+  (`rpc_server` setting, then PATH, then the llama directory the setup scripts
+  use) and runs it as `--host 127.0.0.1 --port <free port> -c`. It is never
+  bound to another address. `share_gpu off` disables it. The worker's status
+  then reports `rpc_ready`.
+- **Tunnel.** The host reaches that port only through `POST /v1/stream/rpc`
+  with `Upgrade: meshcompute-stream/1` on the worker's own outbound,
+  mutually authenticated TLS 1.3 connection (pinned host certificate, revocation
+  re-checked every second). Bytes are then piped unmodified.
+- **Host.** `pool start NAME` (dashboard: *Start pool*) opens one loopback
+  forwarding port per lending worker and starts `llama-server --model ...
+  --n-gpu-layers 999 --rpc 127.0.0.1:p1,127.0.0.1:p2 ...` on the configured
+  loopback `backend_url`. llama.cpp divides the layers over the local GPU and
+  the RPC devices by free memory. The choice is saved (`pool_model`,
+  `pool_context`) and resumed by the next `host`.
+- **Autonomy.** Every three seconds the host compares the lending workers with
+  the running server's. If the set changed, it reloads the model (after the
+  request in flight); if the server died, it restarts it with backoff. A worker
+  that merely stops answering for a few seconds is not dropped.
+
+Limits that are llama.cpp's, not hidden by this toolkit: all computers need the
+same llama.cpp release (the RPC handshake checks the version); weights travel
+to each worker on first load (the `-c` cache avoids repeats); every token
+crosses the link between layers, so throughput follows link latency; a worker
+leaving mid-generation fails that generation. Ambient `LLAMA_*` and
+`GGML_RPC*` environment variables are still removed: only the arguments above
+configure the processes. A worker that lends its GPU exposes the RPC server's
+parsers to the group host and to nobody else.
+
+Without the pool, sending a job to one authenticated node that runs its own
+model remains remote single-node inference.
 
 ## Verification scope
 

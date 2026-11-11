@@ -5,18 +5,22 @@ import (
 	"errors"
 	"io"
 	"meshcompute/internal/model"
+	"net"
 	"net/url"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type LaunchConfig struct {
 	Binary, RegistryDir, Model, Endpoint string
 	Context, GPULayers                   int
 	Stdout, Stderr                       io.Writer
+	// RPC lists loopback addresses of forwarders to workers' llama.cpp RPC
+	// servers. Layers are then spread over this computer and those workers.
+	RPC []string
 }
 
 // Run blocks until the foreground process exits. Context cancellation kills it.
@@ -39,14 +43,22 @@ func Run(ctx context.Context, c LaunchConfig) error {
 	if err := model.Verify(e); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, c.Binary, "--model", e.Path, "--alias", e.Name, "--host", u.Hostname(), "--port", strconv.Itoa(port), "--ctx-size", strconv.Itoa(c.Context), "--parallel", "1", "--n-gpu-layers", strconv.Itoa(c.GPULayers), "--no-context-shift")
-	// Ambient llama configuration must not enable downloads, RPC or extra listeners.
-	for _, env := range os.Environ() {
-		key := strings.ToUpper(strings.SplitN(env, "=", 2)[0])
-		if !strings.HasPrefix(key, "LLAMA_") && !strings.HasPrefix(key, "GGML_RPC") {
-			cmd.Env = append(cmd.Env, env)
+	args := []string{"--model", e.Path, "--alias", e.Name, "--host", u.Hostname(), "--port", strconv.Itoa(port), "--ctx-size", strconv.Itoa(c.Context), "--parallel", "1", "--n-gpu-layers", strconv.Itoa(c.GPULayers), "--no-context-shift"}
+	for _, addr := range c.RPC {
+		host, _, err := net.SplitHostPort(addr)
+		if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
+			return errors.New("RPC endpoints must be loopback forwarders")
 		}
 	}
+	if len(c.RPC) > 0 {
+		args = append(args, "--rpc", strings.Join(c.RPC, ","))
+	}
+	cmd := exec.CommandContext(ctx, c.Binary, args...)
+	cmd.Dir = filepath.Dir(c.Binary)
+	cmd.WaitDelay = 5 * time.Second
+	// Ambient llama configuration must not enable downloads, RPC or extra
+	// listeners; only the explicit arguments above do.
+	cmd.Env = toolEnv(c.Binary)
 	cmd.Stdout = c.Stdout
 	cmd.Stderr = c.Stderr
 	return cmd.Run()

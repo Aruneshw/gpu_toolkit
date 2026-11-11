@@ -56,6 +56,21 @@ jobs:
           go build ./...
           go test ./... -count=1
 
+  dashboard-browser:
+    name: dashboards in headless Chrome
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fleet view, terminal grid, tasks and worker approval in a real browser
+        run: CHROME="$(command -v google-chrome || command -v chromium)" scripts/ui-test.sh
+
   cross:
     name: cross-compile
     runs-on: ubuntu-latest
@@ -306,8 +321,8 @@ jobs:
           bash -n linux.sh
           # A stale build without the newest flags must never be used.
           mkdir -p bin && printf '#!/bin/sh\necho stale\n' > bin/meshcompute && chmod +x bin/meshcompute
-          echo 5 | ./linux.sh 2>&1 | tee menu.log
-          ./bin/meshcompute help | grep -q -- '--open'
+          echo 7 | ./linux.sh 2>&1 | tee menu.log
+          ./bin/meshcompute help | grep -q -- '--mesh'
           # Worker uses its own local port so it does not collide with the host.
           ./bin/meshcompute --home "$MESHCOMPUTE_WORKER_HOME" install
           ./bin/meshcompute --home "$MESHCOMPUTE_WORKER_HOME" config set listen 127.0.0.1:17444

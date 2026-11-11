@@ -68,3 +68,34 @@ func TestDisk(t *testing.T) {
 		t.Fatal("missing path accepted")
 	}
 }
+
+func TestParseGPUTelemetry(t *testing.T) {
+	g, e := parseGPUs("0, RTX, 6144, 5251, 7, 555.58, 39, 3.44, [N/A]\n1, Hot, 1, 1, 1, 1, 999, -5, 80.5\n")
+	if e != nil || len(g) != 2 {
+		t.Fatalf("%v %v", g, e)
+	}
+	if g[0].TemperatureC == nil || *g[0].TemperatureC != 39 || g[0].PowerWatts == nil || *g[0].PowerWatts != 3.44 || g[0].PowerLimitWatts != nil {
+		t.Fatalf("%+v", g[0])
+	}
+	if g[1].TemperatureC != nil || g[1].PowerWatts != nil || g[1].PowerLimitWatts == nil || *g[1].PowerLimitWatts != 80.5 {
+		t.Fatalf("out-of-range readings must be dropped: %+v", g[1])
+	}
+	if _, e := parseGPUs("0, a, 1, 1, 1, v, 1, 2"); e == nil {
+		t.Fatal("accepted 8 columns")
+	}
+}
+
+func TestCPULoad(t *testing.T) {
+	cpuPrev.busy, cpuPrev.total = 0, 0
+	if p := cpuLoad("cpu  100 0 100 800 0 0 0 0 0 0\ncpu0 1 1 1 1\n"); p != nil {
+		t.Fatalf("first sample must be unknown, got %v", *p)
+	}
+	// 100 more busy jiffies and 300 more idle: 25%.
+	p := cpuLoad("cpu  150 0 150 1100 0 0 0 0 0 0\n")
+	if p == nil || *p != 25 {
+		t.Fatalf("got %v", p)
+	}
+	if cpuLoad("intr 1 2 3") != nil || cpuLoad("cpu 1 x 3 4 5") != nil {
+		t.Fatal("parsed garbage")
+	}
+}

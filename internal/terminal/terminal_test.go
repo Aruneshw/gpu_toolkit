@@ -3,6 +3,7 @@
 package terminal
 
 import (
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -124,5 +125,83 @@ func TestScrollbackOffsets(t *testing.T) {
 	all, _, _, _ := s.Read(-5)
 	if !strings.Contains(string(all), "first-marker") {
 		t.Fatal("invalid offset did not replay scrollback")
+	}
+}
+
+// A shell on a "worker" manager driven from a "host" manager over one stream:
+// output, input, resize, exit code, and killing the shell when the host hangs up.
+func TestRemoteShellOverStream(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	worker := NewManager([]string{"MESHCOMPUTE_TEST_MARK=remote-ok"}, t.TempDir())
+	defer worker.CloseAll()
+	host := NewManager(nil, "")
+	defer host.CloseAll()
+	a, b := net.Pipe()
+	served := make(chan error, 1)
+	go func() { served <- worker.Serve(b) }()
+	s, err := host.Attach(a, 90, 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Write([]byte("echo $MESHCOMPUTE_TEST_MARK; stty size\n")); err != nil {
+		t.Fatal(err)
+	}
+	if out := waitFor(t, s, "25 90"); !strings.Contains(out, "remote-ok") {
+		t.Fatalf("worker environment missing: %q", out)
+	}
+	if err := s.Resize(110, 33); err != nil {
+		t.Fatal(err)
+	}
+	// A large paste crosses several frames.
+	big := strings.Repeat(strings.Repeat("x", 49)+"\n", 3000)
+	if err := s.Write([]byte("stty size; stty -echo; wc -c <<'END'\n" + big + "END\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, s, "33 110")
+	waitFor(t, s, "150000")
+	if err := s.Write([]byte("exit 7\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-s.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("remote shell did not exit")
+	}
+	if s.ExitCode() != 7 {
+		t.Fatalf("exit code %d", s.ExitCode())
+	}
+	if err := <-served; err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+
+	// Hanging up from the host kills the worker's shell.
+	a, b = net.Pipe()
+	go func() { served <- worker.Serve(b) }()
+	s, err = host.Attach(a, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Write([]byte("echo started\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, s, "started")
+	host.Close(s.ID)
+	select {
+	case <-served:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker kept serving after the host hung up")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		worker.mu.Lock()
+		n := len(worker.sessions)
+		worker.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d worker shells survived the hangup", n)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

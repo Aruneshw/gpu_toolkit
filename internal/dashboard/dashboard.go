@@ -1,8 +1,8 @@
 // Package dashboard serves a token-protected, loopback-only control panel.
 //
-// It aggregates telemetry from the local agent and explicitly configured peers.
-// Totals are informational: VRAM is not pooled and each request runs on exactly
-// one selected node.
+// It aggregates telemetry from the local agent and its workers, opens
+// terminals (here, and on workers that allowed it) and controls the group
+// host's pooled model. Without the pool, a request runs on one selected node.
 package dashboard
 
 import (
@@ -29,6 +29,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -38,8 +39,27 @@ var assets embed.FS
 const (
 	cookieName = "meshcompute_token"
 	maxBody    = backend.MaxPromptBytes + 4096
-	scopeNote  = "Aggregate telemetry only. Each request runs entirely on one selected node; VRAM and GPUs are not pooled."
+	scopeNote  = "Totals add up every connected computer. Start the pooled model to run one model across all shared GPUs; without it each request runs entirely on one selected node."
 )
+
+// scope describes how inference is placed right now.
+func scope(nodes []Node) string {
+	for _, n := range nodes {
+		if n.Name != "local" || n.Status == nil || n.Status.Pool == nil {
+			continue
+		}
+		p := n.Status.Pool
+		switch {
+		case p.State == "ready" && len(p.Workers) > 0:
+			return fmt.Sprintf("Pooled: model %q runs across this computer and %d worker GPU(s) through llama.cpp RPC. Choose node \"local\" to use them all.", p.Model, len(p.Workers))
+		case p.State == "ready":
+			return fmt.Sprintf("Pool is on: model %q runs on this computer; workers that lend a GPU are added automatically.", p.Model)
+		case p.Enabled:
+			return "Pool is " + p.State + ": " + p.Detail
+		}
+	}
+	return scopeNote
+}
 
 // Node is one cluster member as reported by its agent.
 type Node struct {
@@ -78,6 +98,9 @@ type Cluster interface {
 type Remote struct {
 	dir string
 	c   config.Config
+
+	pingMu     sync.Mutex
+	pingClient *http.Client
 }
 
 func NewRemote(dir string, c config.Config) *Remote {
@@ -172,20 +195,28 @@ func (r *Remote) Statuses(ctx context.Context) ([]Node, error) {
 		return nil, err
 	}
 	peers := append([]config.Peer{{Name: "local", Endpoint: r.c.LocalEndpoint()}}, configured...)
-	rows := make([]Node, 0, len(peers))
-	for _, p := range peers {
-		var st agent.Status
-		bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := readJSON(bounded, cl, p.Endpoint, "/v1/status", nil, &st)
-		cancel()
-		row := Node{Name: p.Name, Healthy: err == nil}
-		if err != nil {
-			row.Error = err.Error()
-		} else {
-			row.Status = &st
-		}
-		rows = append(rows, row)
+	// Ask every computer at once, so one slow or offline laptop does not
+	// delay the others.
+	rows := make([]Node, len(peers))
+	var wg sync.WaitGroup
+	for i, p := range peers {
+		wg.Add(1)
+		go func(i int, p config.Peer) {
+			defer wg.Done()
+			var st agent.Status
+			bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := readJSON(bounded, cl, p.Endpoint, "/v1/status", nil, &st)
+			cancel()
+			row := Node{Name: p.Name, Healthy: err == nil}
+			if err != nil {
+				row.Error = err.Error()
+			} else {
+				row.Status = &st
+			}
+			rows[i] = row
+		}(i, p)
 	}
+	wg.Wait()
 	return rows, nil
 }
 
@@ -331,7 +362,14 @@ type Server struct {
 	handler        http.Handler
 	inviter        Inviter
 	term           *terminal.Manager
+	localTerm      bool
 	cli            string
+	// role is "host" (group host), "worker" (a worker's own dashboard) or
+	// "local".
+	role   string
+	tasks  tasks
+	worker WorkerConsole
+	fleet  fleet
 }
 
 func New(cluster Cluster, listen, token string) (*Server, error) {
@@ -357,7 +395,7 @@ func New(cluster Cluster, listen, token string) (*Server, error) {
 	} else if !validToken(token) {
 		return nil, errors.New("dashboard token must be 64 hexadecimal characters")
 	}
-	s := &Server{cluster: cluster, listen: listen, port: port, token: token, cli: "meshcompute"}
+	s := &Server{cluster: cluster, listen: listen, port: port, token: token, cli: "meshcompute", role: "local"}
 	if inv, ok := cluster.(Inviter); ok {
 		s.inviter = inv
 	}
@@ -482,10 +520,11 @@ func (s *Server) routes() http.Handler {
 			writeError(w, http.StatusServiceUnavailable, "cluster identity unavailable")
 			return
 		}
-		writeJSON(w, StatusResponse{Nodes: nodes, Aggregate: aggregate(nodes), Scope: scopeNote})
+		writeJSON(w, StatusResponse{Nodes: nodes, Aggregate: aggregate(nodes), Scope: scope(nodes)})
 	})
 	mux.HandleFunc("/api/run", s.handleRun)
 	s.toolRoutes(mux)
+	s.fleetRoutes(mux)
 	return mux
 }
 

@@ -52,3 +52,15 @@ func SelfOnly(dir string, next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}))
 }
+
+// ClientTLS returns this node's mutual TLS client settings for a raw
+// connection to an agent, with the same peer checks as Client.
+func ClientTLS(dir string) (*tls.Config, error) {
+	c, err := Client(dir)
+	if err != nil {
+		return nil, err
+	}
+	cfg := c.Transport.(restrictedTransport).TLSClientConfig.Clone()
+	cfg.NextProtos = []string{"http/1.1"}
+	return cfg, nil
+}

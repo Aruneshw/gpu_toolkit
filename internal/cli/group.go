@@ -124,6 +124,8 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 	auto := false
 	open := false
 	direct := false
+	mesh := ""
+	poolModel := ""
 	relayServer := c.Relay
 	port := 7443
 	if err := flags("host", args, func(f *flag.FlagSet) {
@@ -137,11 +139,45 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 		f.BoolVar(&open, "open", false, "open the dashboard in the default browser")
 		f.StringVar(&relayServer, "relay", relayServer, "public TCP relay to host through, e.g. bore.pub (works from any network)")
 		f.BoolVar(&direct, "direct", false, "host directly on this computer's IP instead of a relay")
+		f.StringVar(&mesh, "mesh", "", "host on a mesh VPN: auto, tailscale, wireguard, an interface name or a VPN IP")
+		f.StringVar(&poolModel, "pool", "", "registered model to serve across every shared GPU")
 	}); err != nil {
 		return err
 	}
 	if direct {
 		relayServer = ""
+	}
+	meshName := ""
+	if mesh == "" && !direct && !auto && advertise == "" && listen == c.Listen && c.Mesh != "" && c.GroupHost && localAddress(hostOf(c.Listen)) {
+		// The group already lives on a mesh address that is still up: stay there.
+		mesh = hostOf(c.Listen)
+	}
+	if mesh == "" && !direct && !auto && advertise == "" && listen == c.Listen && c.Mesh != "" && c.GroupHost && relayServer == "" {
+		return fmt.Errorf("this group is hosted on %s, but that VPN address (%s) is not up on this computer\n  connect the VPN and start again, or move the group with --mesh auto, --relay bore.pub or --direct --auto (friends then need a new invitation)", c.Mesh, hostOf(c.Listen))
+	}
+	if mesh != "" {
+		// Mesh mode: listen on the VPN address. Members of the same Tailscale
+		// tailnet or WireGuard network connect directly; no relay is involved.
+		m, err := pickMesh(mesh)
+		if err != nil {
+			return err
+		}
+		if port < 1 || port > 65535 {
+			return errors.New("port must be between 1 and 65535")
+		}
+		if hostOf(c.Listen) == m.IP && c.GroupHost {
+			listen = c.Listen // keep the group's port
+		} else {
+			listen = net.JoinHostPort(m.IP, strconv.Itoa(port))
+		}
+		advertise = "https://" + listen
+		if ip := net.ParseIP(m.IP); config.RemoteEndpoint(advertise, false) != nil && ip.IsGlobalUnicast() {
+			public = true // a VPN that hands out public-range addresses
+		} else {
+			public = false
+		}
+		relayServer, meshName = "", m.label()
+		fmt.Fprintf(out, "Mesh: hosting on %s (%s). Computers on the same VPN connect directly.\n", m.IP, meshName)
 	}
 	explicitListen := listen != c.Listen
 	if port < 1 || port > 65535 {
@@ -200,8 +236,8 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 	if relayServer != "" {
 		keep = false
 	}
-	if relayServer != "" {
-		// listen and advertise were chosen by the relay above.
+	if relayServer != "" || meshName != "" {
+		// listen and advertise were chosen by the relay or the mesh above.
 	} else if keep {
 		listen, advertise, public = c.Listen, c.Advertise, c.Public
 		fmt.Fprintf(out, "Resuming group on %s.\n", listen)
@@ -237,7 +273,13 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 	}
 	next := c
 	next.Listen, next.Advertise, next.Public, next.GroupHost = listen, advertise, public, true
-	next.Relay, next.RelayPort = "", 0
+	next.Relay, next.RelayPort, next.Mesh = "", 0, meshName
+	if poolModel != "" {
+		next.PoolModel = poolModel
+		if next.PoolContext == 0 {
+			next.PoolContext = agent.DefaultPoolContext
+		}
+	}
 	if session != nil {
 		next.Relay, next.RelayPort = relayServer, session.Port
 	}
@@ -294,6 +336,7 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 		return err
 	}
 	panel.EnableTerminal(dir)
+	panel.EnableTasks(ctx)
 	output := &synchronizedWriter{w: out}
 	fmt.Fprintf(output, "Group host: %s\nPrivate single-use invitation (expires in %s):\n%s\n", advertise, ttl, code)
 	fmt.Fprintf(output, "Dashboard: http://%s/?token=%s\n", panel.Listen(), panel.Token())
@@ -304,6 +347,9 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 	ip := net.ParseIP(hostIP)
 	if session != nil {
 		fmt.Fprintf(output, "Reachability: public relay %s:%d. Friends on any network can join: no IPv6, firewall or router setup needed.\n", relayServer, session.Port)
+	} else if meshName != "" {
+		_, port, _ := net.SplitHostPort(listen)
+		fmt.Fprintf(output, "Reachability: %s. Only computers on the same VPN can join; they need nothing else (allow TCP %s on the VPN interface if a firewall is enabled).\n", meshName, port)
 	} else if ip != nil && ip.IsLoopback() {
 		fmt.Fprintln(output, "Loopback host: only this computer can connect. Use --auto to select a reachable address.")
 	} else if ip != nil && ip.To4() != nil && ip.IsPrivate() {
@@ -374,21 +420,49 @@ func readInvitation(r *bufio.Reader) (string, error) {
 // keeps it connected. An existing worker identity is replaced only after the
 // new enrollment succeeds and is kept as a backup file.
 func joinGroup(ctx context.Context, dir string, c config.Config, args []string, in io.Reader, out io.Writer) error {
-	code, stdin, noStart := "", false, false
-	for _, a := range args {
+	code, stdin, noStart, open := "", false, false, true
+	const joinUsage = "usage: join [CODE|--stdin] [--no-start] [--no-open] [--allow-terminal|--no-terminal] [--tasks ask|auto|off] [--no-share-gpu]"
+	changed := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		switch {
+		case a == "--no-open":
+			open = false
+		case a == "--tasks" && i+1 < len(args):
+			i++
+			switch args[i] {
+			case "ask", "auto", "off":
+				c.TaskApproval, changed = args[i], true
+			default:
+				return errors.New("--tasks must be ask, auto or off")
+			}
+		case a == "--allow-tasks":
+			c.TaskApproval, changed = "auto", true
 		case a == "--stdin":
 			stdin = true
 		case a == "--no-start":
 			noStart = true
+		case a == "--allow-terminal":
+			c.AllowTerminal, changed = true, true
+		case a == "--no-terminal":
+			c.AllowTerminal, changed = false, true
+		case a == "--no-share-gpu":
+			c.ShareGPU, changed = "off", true
+		case a == "--share-gpu":
+			c.ShareGPU, changed = "", true
 		case strings.HasPrefix(a, "-") || code != "":
-			return errors.New("usage: join [CODE|--stdin] [--no-start]")
+			return errors.New(joinUsage)
 		default:
 			code = a
 		}
 	}
 	if stdin && code != "" {
-		return errors.New("usage: join [CODE|--stdin] [--no-start]")
+		return errors.New(joinUsage)
+	}
+	if changed {
+		if err := config.Save(dir, c); err != nil {
+			return err
+		}
 	}
 	if in == nil {
 		in = strings.NewReader("")
@@ -418,7 +492,7 @@ func joinGroup(ctx context.Context, dir string, c config.Config, args []string, 
 				}
 				if line == "" {
 					fmt.Fprintln(out, "Reconnecting. Press Ctrl-C to stop.")
-					return agent.New(dir, c, out).Serve(ctx)
+					return serveWorker(ctx, dir, c, out, open)
 				}
 				code = line
 			}
@@ -458,7 +532,51 @@ func joinGroup(ctx context.Context, dir string, c config.Config, args []string, 
 		return err
 	}
 	fmt.Fprintln(out, "Starting the worker. Keep this window open; press Ctrl-C to stop.")
-	return agent.New(dir, c, out).Serve(ctx)
+	return serveWorker(ctx, dir, c, out, open)
+}
+
+// serveWorker runs this worker together with its own dashboard, where the
+// owner sees what the host does here and approves tasks.
+func serveWorker(ctx context.Context, dir string, c config.Config, out io.Writer, open bool) error {
+	out = &synchronizedWriter{w: out}
+	a := agent.New(dir, c, out)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if listen := workerDashboardAddress(); listen != "" {
+		if panel, err := dashboard.NewWorker(a, listen, ""); err == nil {
+			link := fmt.Sprintf("http://%s/?token=%s", panel.Listen(), panel.Token())
+			a.SetDashboardURL(link)
+			go func() {
+				if err := panel.Serve(ctx); err != nil {
+					fmt.Fprintf(out, "Worker dashboard stopped: %v\n", err)
+				}
+			}()
+			fmt.Fprintf(out, "This computer's dashboard: %s\n  It shows what the group host does here, asks you to approve tasks, and has your on/off switches.\n", link)
+			if open && openBrowser(link) {
+				fmt.Fprintln(out, "Opened it in your browser.")
+			}
+		}
+	}
+	return a.Serve(ctx)
+}
+
+// workerDashboardAddress picks a free loopback port for the worker
+// dashboard: MESHCOMPUTE_WORKER_UI, or the first free one from 8082.
+func workerDashboardAddress() string {
+	if v := os.Getenv("MESHCOMPUTE_WORKER_UI"); v != "" {
+		if v == "off" {
+			return ""
+		}
+		return v
+	}
+	for port := 8082; port < 8100; port++ {
+		addr := fmt.Sprintf("127.0.0.1:%d", port)
+		if l, err := net.Listen("tcp", addr); err == nil {
+			l.Close()
+			return addr
+		}
+	}
+	return ""
 }
 
 // resolveRelay returns the relay's IPv4 address; invitations carry literal IPs.

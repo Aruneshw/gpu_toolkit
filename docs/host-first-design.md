@@ -77,14 +77,38 @@ creator can use that ID with `run --node`, `network probe`, and `revoke`.
 
 ## What inference needs
 
-Telemetry works without a language model. To run inference, register a local
-GGUF and start a compatible llama.cpp backend **on the worker** using
-[backend.md](backend.md) / [windows.md](windows.md). Then select that worker
-and its model in the dashboard. Models and GPU drivers are hardware-specific
-and are not silently downloaded. Each request runs on one computer; memory
-is not pooled across computers.
+Telemetry works without a language model. There are two ways to run one:
+
+- **Pool (one model across all GPUs).** Install the same llama.cpp release on
+  every computer (`./linux.sh gpu`, `win.bat` option 5), register a GGUF on the
+  host, and click *Start pool* (or `meshcompute pool start NAME`). Workers lend
+  their GPU automatically; select node *local*. See
+  [backend.md](backend.md#pooled-gpus-through-llamacpp-rpc).
+- **One computer.** Register a GGUF and start a llama.cpp backend **on that
+  worker** using [backend.md](backend.md) / [windows.md](windows.md), then
+  select that worker and its model in the dashboard.
+
+Models and GPU drivers are hardware-specific and are not silently downloaded.
 
 ## Connectivity
+
+### Mesh VPN (Tailscale, WireGuard)
+
+If every computer is on the same Tailscale tailnet or WireGuard network, host
+on the VPN address instead of the relay:
+
+```sh
+./linux.sh mesh                       # or: win.bat mesh
+meshcompute host --mesh auto --open   # auto | tailscale | wireguard | wg0 | 10.8.0.1
+meshcompute mesh                      # show the VPN addresses that were found
+```
+
+Friends join with the invitation exactly as before; it carries the VPN
+address. Connections are direct (no relay), which matters for the pool: model
+weights and every generated token travel over this link. The group stays on
+that address across restarts; if the VPN is down, `host` stops with an
+explanation instead of moving the group. WireGuard on Windows names its
+adapter after your tunnel, so pass the address: `--mesh 10.8.0.1`.
 
 ### Default: public relay (works from any network)
 

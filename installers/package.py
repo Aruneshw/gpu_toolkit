@@ -22,6 +22,10 @@ for arch in ('amd64', 'arm64'):
         info.mode = 0o755
         with open(root / 'linux.sh', 'rb') as f:
             archive.addfile(info, f)
+        info = archive.gettarinfo(root / 'scripts/linux-gpu-setup.sh', arcname='scripts/linux-gpu-setup.sh')
+        info.mode = 0o755
+        with open(root / 'scripts/linux-gpu-setup.sh', 'rb') as f:
+            archive.addfile(info, f)
         archive.add(root / 'docs/host-first-design.md', arcname='QUICKSTART.md')
         archive.add(root / 'LICENSE', arcname='LICENSE')
 names = ['meshcompute-linux-amd64', 'meshcompute-linux-arm64', 'meshcompute-windows-amd64.exe',

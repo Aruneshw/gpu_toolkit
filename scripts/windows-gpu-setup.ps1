@@ -39,6 +39,23 @@ Expand-Archive -Path $zipCudart -DestinationPath $llamaDir -Force
 $server = Join-Path $llamaDir 'llama-server.exe'
 if (-not (Test-Path $server)) { throw 'llama-server.exe missing after extraction' }
 
+$rpc = @('ggml-rpc-server.exe', 'rpc-server.exe', 'llama-rpc-server.exe') | ForEach-Object { Join-Path $llamaDir $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+Write-Host ''
+Write-Host 'llama.cpp is installed.' -ForegroundColor Green
+if ($rpc) {
+    Write-Host 'This PC can now LEND ITS GPU to the group: go back to win.bat and choose 2 (Join) or 3 (Reconnect).' -ForegroundColor Green
+    Write-Host 'MeshCompute starts the GPU sharing service itself; it listens on this PC only and is reached'
+    Write-Host 'through the encrypted group connection. You do not need to keep this window open for that.'
+} else {
+    Write-Host 'The RPC server was not found in this llama.cpp build, so this PC cannot lend its GPU to a pool.' -ForegroundColor Yellow
+}
+Write-Host ''
+Write-Host 'Optional: also run a small model on THIS PC alone (downloads 986 MB, uses this GPU''s memory).'
+Write-Host 'Not needed for pooling. The group host needs a model; friends who only lend a GPU do not.'
+$own = [string](Read-Host 'Download and start the small model here? [y/N]')
+if (@('y', 'yes') -notcontains $own.Trim().ToLowerInvariant()) { return }
+
 Get-BigFile 'https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf' $gguf 'Qwen2.5-1.5B model (986 MB)'
 
 Remove-Item (Join-Path $models 'qwen.json') -ErrorAction SilentlyContinue

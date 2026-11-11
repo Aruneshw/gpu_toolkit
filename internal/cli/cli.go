@@ -12,22 +12,35 @@ import (
 	"meshcompute/internal/security"
 	"net"
 	"net/url"
+	"strconv"
 	"time"
 )
 
 const usage = `MeshCompute — separate devices, authenticated inference
 Usage: meshcompute [--home DIR] COMMAND
   install                         initialize user configuration (no downloads)
-  config set KEY VALUE            listen | backend_url (before cluster creation)
+  config set KEY VALUE            listen | backend_url | allow_terminal true|false |
+                                  task_approval ask|auto|off |
+                                  share_gpu on|off | rpc_server PATH | llama_server PATH
   cluster create                  create private CA and coordinator identity
   host [--auto|--listen IP:7443] [--public] [--advertise https://IP:7443] [--open]
-                                  create/resume a group, show invite and dashboard
+       [--mesh auto|tailscale|wireguard|IFACE|IP] [--pool MODEL]
+                                  create/resume a group, show invite and dashboard;
+                                  --mesh hosts on a Tailscale/WireGuard address
+  mesh                            list this computer's mesh VPN addresses
   pair [--ttl 5m]                 issue a secret, one-use invitation
-  join [CODE|--stdin] [--no-start] enroll with an invite (replaces an old worker
+  join [CODE|--stdin] [--no-start] [--no-open] [--allow-terminal]
+       [--tasks ask|auto|off] [--no-share-gpu]
+                                  enroll with an invite (replaces an old worker
                                   identity, kept as a backup) and start the worker
+                                  with its own dashboard; --allow-terminal lets the
+                                  host open a shell here; --tasks decides whether
+                                  commands the host sends need your approval
+  pool start MODEL [--context N]  host: serve MODEL across every shared GPU
+  pool stop | pool status         host: stop or inspect the pooled model
   revoke NODE_ID                  revoke an enrolled node on coordinator
   peer add NAME HTTPS_ENDPOINT    remember an explicitly enrolled worker
-  start                           run the HTTPS agent in the foreground
+  start [--no-open]               run the agent (a worker also gets its dashboard)
   status                          local and configured peer resources
   monitor [--interval 5s]          periodically show status until Ctrl-C
   ui [--listen 127.0.0.1:8081] [--open]  token-protected localhost dashboard
@@ -137,7 +150,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out io.Writer, versio
 		return hostGroup(ctx, dir, c, args, out)
 	case "config":
 		if len(args) != 3 || args[0] != "set" {
-			return errors.New("usage: config set listen|backend_url VALUE")
+			return errors.New("usage: config set listen|backend_url|allow_terminal|task_approval|share_gpu|rpc_server|llama_server VALUE")
 		}
 		switch args[1] {
 		case "listen":
@@ -148,6 +161,32 @@ func Run(ctx context.Context, args []string, in io.Reader, out io.Writer, versio
 			c.Advertise = "https://" + args[2]
 		case "backend_url":
 			c.BackendURL = args[2]
+		case "allow_terminal":
+			on, e := strconv.ParseBool(args[2])
+			if e != nil {
+				return errors.New("allow_terminal must be true or false")
+			}
+			c.AllowTerminal = on
+		case "task_approval":
+			switch args[2] {
+			case "ask", "auto", "off":
+				c.TaskApproval = args[2]
+			default:
+				return errors.New("task_approval must be ask, auto or off")
+			}
+		case "share_gpu":
+			switch args[2] {
+			case "on", "true", "auto":
+				c.ShareGPU = ""
+			case "off", "false":
+				c.ShareGPU = "off"
+			default:
+				return errors.New("share_gpu must be on or off")
+			}
+		case "rpc_server":
+			c.RPCServer = args[2]
+		case "llama_server":
+			c.LlamaServer = args[2]
 		default:
 			return errors.New("unknown configuration key")
 		}

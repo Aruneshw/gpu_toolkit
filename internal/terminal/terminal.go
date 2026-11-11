@@ -1,6 +1,7 @@
 // Package terminal runs interactive shells on pseudo-terminals for the
-// loopback dashboard. Sessions belong to the local user and run with that
-// user's privileges; nothing here is reachable from enrolled workers.
+// loopback dashboard. Sessions run as the local user. A session is either a
+// shell on this computer or, on a group host, a shell on a worker that
+// explicitly allowed it (see remote.go); workers can never open one here.
 package terminal
 
 import (
@@ -10,13 +11,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"sync"
 	"time"
 )
 
 const (
-	// MaxSessions bounds concurrent shells per dashboard.
-	MaxSessions = 8
+	// MaxSessions bounds concurrent shells per dashboard: enough for one
+	// terminal per worker of a large group plus a few local ones.
+	MaxSessions = 24
 	// scrollback is how much recent output a reconnecting browser replays.
 	scrollback = 256 << 10
 	// idleTimeout closes a session nobody has watched for this long.
@@ -24,7 +28,60 @@ const (
 )
 
 // ErrUnsupported is returned on platforms without a pseudo-terminal backend.
-var ErrUnsupported = errors.New("the dashboard terminal is only available on Linux hosts")
+var ErrUnsupported = errors.New("the terminal is only available on Linux and Windows 10 (1809) or newer")
+
+// endpoint is what a session reads and writes: a local pseudo-terminal or a
+// shell running on a worker.
+type endpoint interface {
+	Read([]byte) (int, error)
+	Write([]byte) (int, error)
+	Resize(cols, rows int) error
+	// Wait is called once after Read fails; it returns the shell's exit code.
+	Wait() int
+	// Kill ends the shell and unblocks Read.
+	Kill()
+}
+
+// local is a shell on this computer attached to a pseudo-terminal.
+type local struct {
+	pty  console
+	proc process
+}
+
+func (l *local) Read(b []byte) (int, error)  { return l.pty.Read(b) }
+func (l *local) Write(b []byte) (int, error) { return l.pty.Write(b) }
+func (l *local) Resize(cols, rows int) error { return l.pty.Resize(cols, rows) }
+func (l *local) Kill()                       { l.proc.Kill(); _ = l.pty.Close() }
+func (l *local) Wait() int {
+	code := l.proc.Wait()
+	_ = l.pty.Close()
+	return code
+}
+
+// process is the running shell.
+type process interface {
+	Wait() int
+	Kill()
+}
+
+// command adapts an exec.Cmd started by the operating system backend.
+type command struct{ cmd *exec.Cmd }
+
+func (c command) Kill() { killGroup(c.cmd) }
+func (c command) Wait() int {
+	if ee, ok := c.cmd.Wait().(*exec.ExitError); ok {
+		return ee.ExitCode()
+	}
+	return 0
+}
+
+// console is the operating system's pseudo-terminal handle.
+type console interface {
+	Read([]byte) (int, error)
+	Write([]byte) (int, error)
+	Resize(cols, rows int) error
+	Close() error
+}
 
 // Manager owns all shell sessions of one dashboard.
 type Manager struct {
@@ -41,9 +98,11 @@ type Manager struct {
 // Session is one running shell attached to a pseudo-terminal.
 type Session struct {
 	ID string
+	// Node is the computer the shell runs on ("local" or a worker ID); set
+	// by whoever opened it, for listing.
+	Node string
 
-	pty  *os.File
-	cmd  *exec.Cmd
+	io   endpoint
 	mu   sync.Mutex
 	buf  []byte        // last <= scrollback bytes of output
 	end  int64         // total bytes ever produced
@@ -99,6 +158,19 @@ func (m *Manager) SetBashInit(lines string) {
 // like a desktop terminal window, rather than a login shell whose profile
 // scripts would reset PATH.
 func shell() string {
+	if sh := os.Getenv("MESHCOMPUTE_SHELL"); sh != "" {
+		if p, err := exec.LookPath(sh); err == nil {
+			return p
+		}
+	}
+	if runtime.GOOS == "windows" {
+		for _, sh := range []string{"powershell.exe", "cmd.exe"} {
+			if p, err := exec.LookPath(sh); err == nil {
+				return p
+			}
+		}
+		return "cmd.exe"
+	}
 	if sh := os.Getenv("SHELL"); sh != "" {
 		if _, err := os.Stat(sh); err == nil {
 			return sh
@@ -133,29 +205,43 @@ func (m *Manager) rcArgs(sh string) []string {
 	return []string{"--rcfile", m.rcfile}
 }
 
-// Open starts a new shell sized cols x rows.
+// Open starts a new shell on this computer sized cols x rows.
 func (m *Manager) Open(cols, rows int) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.closed {
-		return nil, errors.New("terminal manager closed")
-	}
-	if len(m.sessions) >= MaxSessions {
-		return nil, errors.New("too many terminal sessions; close one first")
-	}
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
+	if err := m.room(); err != nil {
 		return nil, err
 	}
 	sh := shell()
 	cmd := exec.Command(sh, m.rcArgs(sh)...)
 	cmd.Dir = m.workdir
 	cmd.Env = append(append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor"), m.env...)
-	pty, err := start(cmd, clamp(cols, 20, 500, 80), clamp(rows, 5, 200, 24))
+	pty, proc, err := start(cmd, clamp(cols, 20, 500, 80), clamp(rows, 5, 200, 24))
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{ID: hex.EncodeToString(b), pty: pty, cmd: cmd, wake: make(chan struct{}), done: make(chan struct{}), seen: time.Now()}
+	return m.add(&local{pty: pty, proc: proc})
+}
+
+// room reports whether another session may start. The caller holds m.mu.
+func (m *Manager) room() error {
+	if m.closed {
+		return errors.New("terminal manager closed")
+	}
+	if len(m.sessions) >= MaxSessions {
+		return errors.New("too many terminal sessions; close one first")
+	}
+	return nil
+}
+
+// add registers a running endpoint as a session. The caller holds m.mu.
+func (m *Manager) add(e endpoint) (*Session, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		e.Kill()
+		return nil, err
+	}
+	s := &Session{ID: hex.EncodeToString(b), io: e, wake: make(chan struct{}), done: make(chan struct{}), seen: time.Now()}
 	m.sessions[s.ID] = s
 	go s.pump()
 	go func() {
@@ -189,6 +275,36 @@ func (m *Manager) Get(id string) (*Session, bool) {
 }
 
 // Close terminates one session's shell and its process group.
+// SessionInfo describes one running shell.
+type SessionInfo struct {
+	ID   string `json:"id"`
+	Node string `json:"node"`
+}
+
+// Label records which computer a session's shell runs on.
+func (m *Manager) Label(s *Session, node string) {
+	m.mu.Lock()
+	s.Node = node
+	m.mu.Unlock()
+}
+
+// List returns the running shells, so a reloaded page can re-attach.
+func (m *Manager) List() []SessionInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]SessionInfo, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		select {
+		case <-s.done:
+			continue
+		default:
+		}
+		out = append(out, SessionInfo{ID: s.ID, Node: s.Node})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Node+out[i].ID < out[j].Node+out[j].ID })
+	return out
+}
+
 func (m *Manager) Close(id string) {
 	m.mu.Lock()
 	s, ok := m.sessions[id]
@@ -220,9 +336,9 @@ func (m *Manager) CloseAll() {
 }
 
 func (s *Session) pump() {
-	buf := make([]byte, 32<<10)
+	buf := make([]byte, 64<<10)
 	for {
-		n, err := s.pty.Read(buf)
+		n, err := s.io.Read(buf)
 		if n > 0 {
 			s.mu.Lock()
 			s.buf = append(s.buf, buf[:n]...)
@@ -238,17 +354,13 @@ func (s *Session) pump() {
 			break
 		}
 	}
-	err := s.cmd.Wait()
+	code := s.io.Wait()
 	s.mu.Lock()
-	s.code = 0
-	if ee, ok := err.(*exec.ExitError); ok {
-		s.code = ee.ExitCode()
-	}
+	s.code = code
 	close(s.done)
 	close(s.wake)
 	s.wake = make(chan struct{})
 	s.mu.Unlock()
-	_ = s.pty.Close()
 }
 
 // Read returns output produced since offset (clipped to the retained
@@ -301,13 +413,13 @@ func (s *Session) Write(b []byte) error {
 		return errors.New("shell exited")
 	default:
 	}
-	_, err := s.pty.Write(b)
+	_, err := s.io.Write(b)
 	return err
 }
 
 // Resize changes the terminal window size.
 func (s *Session) Resize(cols, rows int) error {
-	return resize(s.pty, clamp(cols, 20, 500, 80), clamp(rows, 5, 200, 24))
+	return s.io.Resize(clamp(cols, 20, 500, 80), clamp(rows, 5, 200, 24))
 }
 
 func (s *Session) kill() {
@@ -316,6 +428,5 @@ func (s *Session) kill() {
 		return
 	default:
 	}
-	killGroup(s.cmd)
-	_ = s.pty.Close()
+	s.io.Kill()
 }

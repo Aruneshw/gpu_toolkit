@@ -31,6 +31,27 @@ type Config struct {
 	// (e.g. "bore.pub"); RelayPort is the public port it holds there.
 	Relay     string `json:"relay,omitempty"`
 	RelayPort int    `json:"relay_port,omitempty"`
+	// Mesh names the VPN interface (Tailscale, WireGuard, ...) a group host
+	// listens on; informational.
+	Mesh string `json:"mesh,omitempty"`
+	// AllowTerminal lets the group host open a shell on this worker. It is an
+	// explicit choice of the worker's owner and is off by default.
+	AllowTerminal bool `json:"allow_terminal,omitempty"`
+	// TaskApproval decides what happens when the group host sends a task
+	// (a command to run here): "ask" (empty) waits for the owner's approval
+	// on this computer's dashboard, "auto" runs it, "off" refuses it.
+	TaskApproval string `json:"task_approval,omitempty"`
+	// ShareGPU "off" stops this worker from lending its GPU to the host's
+	// pooled model through llama.cpp RPC; empty means share when possible.
+	ShareGPU string `json:"share_gpu,omitempty"`
+	// RPCServer and LlamaServer are optional paths to the llama.cpp
+	// rpc-server (workers) and llama-server (host) binaries.
+	RPCServer   string `json:"rpc_server,omitempty"`
+	LlamaServer string `json:"llama_server,omitempty"`
+	// PoolModel is the registered model a group host serves across every
+	// shared GPU; PoolContext is its context size.
+	PoolModel   string `json:"pool_model,omitempty"`
+	PoolContext int    `json:"pool_context,omitempty"`
 }
 
 func Default() Config {
@@ -108,6 +129,17 @@ func (c Config) Validate() error {
 	}
 	if e := Endpoint(c.BackendURL, true); e != nil {
 		return e
+	}
+	switch c.TaskApproval {
+	case "", "ask", "auto", "off":
+	default:
+		return errors.New("task_approval must be ask, auto or off")
+	}
+	if c.ShareGPU != "" && c.ShareGPU != "off" {
+		return errors.New("share_gpu must be empty or off")
+	}
+	if c.PoolContext < 0 || c.PoolContext > 1048576 {
+		return errors.New("invalid pool context")
 	}
 	seen := map[string]bool{}
 	for _, p := range c.Peers {

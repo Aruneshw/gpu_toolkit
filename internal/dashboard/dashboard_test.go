@@ -173,7 +173,7 @@ func TestStatusAggregate(t *testing.T) {
 	if strings.Join(a.Models, ",") != "lfm3,qwen" {
 		t.Fatalf("models %v", a.Models)
 	}
-	if !strings.Contains(got.Scope, "not pooled") {
+	if !strings.Contains(got.Scope, "one selected node") {
 		t.Fatalf("scope %q", got.Scope)
 	}
 }

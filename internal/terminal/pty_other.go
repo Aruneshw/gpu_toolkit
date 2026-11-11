@@ -1,15 +1,12 @@
-//go:build !linux
+//go:build !linux && !windows
 
 package terminal
 
-import (
-	"os"
-	"os/exec"
-)
+import "os/exec"
 
-func start(*exec.Cmd, int, int) (*os.File, error) { return nil, ErrUnsupported }
-
-func resize(*os.File, int, int) error { return ErrUnsupported }
+func start(*exec.Cmd, int, int) (console, process, error) {
+	return nil, nil, ErrUnsupported
+}
 
 func killGroup(cmd *exec.Cmd) {
 	if cmd.Process != nil {

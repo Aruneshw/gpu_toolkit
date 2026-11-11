@@ -158,10 +158,68 @@
   .steps a { color: var(--accent); }
   .term-bar { display: flex; gap: .4rem; flex-wrap: wrap; padding: .6rem 1rem; border-bottom: 1px solid var(--line); align-items: center; }
   .term-bar button { padding: .3rem .6rem; font-size: .76rem; }
+  .term-bar select { width: auto; padding: .3rem .5rem; font-size: .8rem; }
+  .pool-body { padding: 1rem; display: grid; gap: .75rem; }
+  .pool-row { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; }
+  .pool-row select, .pool-row input { width: auto; }
+  .pool-row input { max-width: 7rem; }
+  .pool-log { margin: 0; max-height: 11rem; overflow: auto; background: #0b1016; border: 1px solid var(--line); border-radius: 6px; padding: .6rem .7rem; font: 12px/1.45 var(--mono); color: var(--muted); white-space: pre-wrap; }
+  .badge { display: inline-block; border: 1px solid var(--accent-dim); color: var(--accent); border-radius: 999px; padding: 0 .5rem; font-size: .72rem; margin-left: .35rem; }
+  .badge.off { border-color: var(--line); color: var(--muted); }
   #term { height: 380px; padding: .4rem .2rem .4rem .6rem; background: #0b1016; }
   #term .xterm-viewport { background: #0b1016 !important; }
   .term-panel.max { position: fixed; inset: 0; z-index: 50; margin: 0; border-radius: 0; display: flex; flex-direction: column; }
   .term-panel.max #term { flex: 1; height: auto; }
+  .switch { display: flex; align-items: center; gap: .45rem; color: var(--text); font-size: .85rem; }
+  .switch input { width: auto; }
+  .pool-row input#taskDir { max-width: none; }
+  .task-nodes { display: flex; flex-wrap: wrap; gap: .4rem .9rem; }
+  .task-nodes label { display: flex; align-items: center; gap: .35rem; color: var(--text); font-size: .84rem; }
+  .task-nodes input { width: auto; }
+  .task { border: 1px solid var(--line); border-radius: 6px; background: #0b1016; margin-top: .6rem; }
+  .task.approval { border-color: var(--warn); }
+  .task-head { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .45rem .7rem; font-size: .82rem; }
+  .task-head code { font: .8rem var(--mono); color: #d7e2ee; flex: 1; min-width: 10rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .task-head button { padding: .2rem .6rem; font-size: .74rem; }
+  .task-state { border-radius: 999px; padding: 0 .55rem; font-size: .72rem; border: 1px solid var(--line); color: var(--muted); }
+  .task-state.running, .task-state.succeeded { border-color: var(--accent-dim); color: var(--accent); }
+  .task-state.approval, .task-state.sending { border-color: #6b4e1f; color: var(--warn); }
+  .task-state.failed, .task-state.denied, .task-state.expired { border-color: #6e2b27; color: var(--bad); }
+  .task-detail { padding: 0 .7rem .4rem; color: var(--muted); font-size: .78rem; }
+  .task-cmd { margin: 0 .7rem .5rem; padding: .5rem .6rem; border: 1px solid var(--line); border-radius: 6px; font: .8rem/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; color: var(--text); }
+  .task-out { margin: 0; border-top: 1px solid var(--line); max-height: 18rem; overflow: auto; padding: .55rem .7rem; font: 12px/1.45 var(--mono); color: #d7e2ee; white-space: pre-wrap; word-break: break-word; }
+  .fleet { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: .75rem; padding: .9rem; }
+  .twin { border: 1px solid var(--line); border-radius: 8px; background: #0b1016; padding: .7rem .8rem; display: grid; gap: .45rem; min-width: 0; }
+  .twin.offline { opacity: .6; }
+  .twin-head { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+  .twin-head b { font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 12rem; }
+  .twin .gpu-name { color: var(--muted); font-size: .76rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meter { display: grid; grid-template-columns: 3.6rem 1fr 6.6rem; gap: .45rem; align-items: center; font-size: .75rem; color: var(--muted); }
+  .meter .bar { height: .45rem; border-radius: 99px; background: var(--line); overflow: hidden; }
+  .meter .bar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width .4s; }
+  .meter .bar i.hot { background: var(--warn); }
+  .meter .bar i.crit { background: var(--bad); }
+  .meter span:last-child { text-align: right; font-family: var(--mono); color: var(--text); }
+  .spark { width: 100%; height: 42px; display: block; }
+  .spark-legend { display: flex; gap: .7rem; font-size: .7rem; color: var(--muted); }
+  .spark-legend i { display: inline-block; width: .6rem; height: .2rem; border-radius: 2px; margin-right: .25rem; vertical-align: middle; }
+  .twin-foot { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; font-size: .74rem; color: var(--muted); }
+  .twin-foot button { padding: .2rem .55rem; font-size: .72rem; }
+  .rtt { font: .72rem var(--mono); border-radius: 99px; padding: 0 .45rem; border: 1px solid var(--line); }
+  .rtt.good { color: var(--accent); border-color: var(--accent-dim); }
+  .rtt.mid { color: var(--warn); border-color: #6b4e1f; }
+  .rtt.bad { color: var(--bad); border-color: #6e2b27; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; padding: .6rem; }
+  .pane { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; min-width: 0; background: #0b1016; }
+  .pane.focus { border-color: var(--accent); }
+  .pane-head { display: flex; align-items: center; gap: .45rem; padding: .3rem .5rem; border-bottom: 1px solid var(--line); background: var(--panel-2); font-size: .78rem; }
+  .pane-head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pane-head button { padding: .15rem .5rem; font-size: .7rem; }
+  .pane-head input { width: auto; }
+  .pane-term { height: 260px; padding: .25rem .1rem .25rem .4rem; }
+  .pane-term .xterm-viewport { background: #0b1016 !important; }
+  .pane-off { color: var(--muted); font-size: .8rem; padding: 1rem; }
+  @media (max-width: 760px) { .grid { grid-template-columns: minmax(0, 1fr) !important; } }
   .footer { color: var(--muted); font-size: .78rem; text-align: center; margin-top: 1.5rem; }
   @media (max-width: 640px) {
     header { padding: 1rem; }
@@ -187,10 +245,15 @@
   <section class="stats" aria-label="Cluster totals">
     <div class="card"><div class="label">Nodes</div><div class="value" id="statNodes">—</div><div class="sub" id="statNodesSub">healthy / total</div></div>
     <div class="card"><div class="label">GPUs</div><div class="value" id="statGPUs">—</div><div class="sub">across healthy nodes</div></div>
-    <div class="card"><div class="label">VRAM total</div><div class="value" id="statVRAM">—</div><div class="sub" id="statVRAMSub">aggregate, not pooled</div></div>
+    <div class="card"><div class="label">VRAM total</div><div class="value" id="statVRAM">—</div><div class="sub" id="statVRAMSub">sum of every GPU</div></div>
     <div class="card"><div class="label">VRAM free</div><div class="value" id="statFree">—</div><div class="sub">sum of free memory</div></div>
     <div class="card"><div class="label">RAM available</div><div class="value" id="statRAM">—</div><div class="sub" id="statRAMSub">—</div></div>
     <div class="card"><div class="label">Models</div><div class="value" id="statModels">—</div><div class="sub">registered on backends</div></div>
+  </section>
+
+  <section class="panel" id="fleetPanel" hidden>
+    <div class="panel-head"><h2 id="fleetTitle">Fleet · live</h2><span class="note" id="fleetNote">sampling…</span></div>
+    <div class="fleet" id="fleet"></div>
   </section>
 
   <section class="panel" id="invitePanel" hidden>
@@ -235,8 +298,64 @@
     </div>
   </section>
 
-  <section class="panel prompt">
-    <h2>Run inference on one node</h2>
+  <section class="panel" id="poolPanel" hidden>
+    <div class="panel-head"><h2>Pooled GPUs</h2><span class="note" id="poolState">off</span></div>
+    <div class="pool-body">
+      <div class="hint" id="poolHint">Run one model across this computer and every friend's GPU. The model file only needs to be on this computer; each friend's laptop lends its GPU automatically when it has llama.cpp installed.</div>
+      <div class="pool-row">
+        <label style="display:flex;align-items:center;gap:.4rem">Model <select id="poolModel"><option value="">no model registered</option></select></label>
+        <label style="display:flex;align-items:center;gap:.4rem">Context <input id="poolContext" type="number" min="256" max="1048576" value="4096"></label>
+        <button id="poolStart" type="button">Start pool</button>
+        <button id="poolStop" class="secondary" type="button">Stop</button>
+        <span class="status-text" id="poolMsg"></span>
+      </div>
+      <div class="hint" id="poolWorkers"></div>
+      <pre class="pool-log" id="poolLog" hidden></pre>
+    </div>
+  </section>
+
+  <section class="panel" id="workerPanel" hidden>
+    <div class="panel-head"><h2>This computer in the group</h2><span class="note" id="linkState">connecting…</span></div>
+    <div class="pool-body">
+      <div class="hint">The group host can use this computer only in the ways you allow here. Changes apply immediately and are saved.</div>
+      <div class="pool-row">
+        <label class="switch"><input type="checkbox" id="setTerminal"> Allow the host to open a terminal here</label>
+        <label class="switch"><input type="checkbox" id="setShare"> Lend my GPU to the pooled model <span class="hint">(applies on reconnect)</span></label>
+      </div>
+      <div class="pool-row">
+        <label style="display:flex;align-items:center;gap:.4rem">Tasks from the host
+          <select id="setTasks"><option value="ask">ask me each time</option><option value="auto">run automatically</option><option value="off">refuse all</option></select>
+        </label>
+        <button type="button" class="secondary" id="closeShells">Close the host's terminals</button>
+        <span class="status-text" id="workerMsg"></span>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="taskPanel" hidden>
+    <div class="panel-head"><h2 id="taskTitle">Tasks</h2><span class="note" id="taskNote"></span></div>
+    <div class="pool-body">
+      <div id="taskCompose" hidden>
+        <div class="hint">Run a command on the workers you tick. Each owner approves it on their own dashboard unless they chose "run automatically". Output streams back here live.</div>
+        <div class="task-nodes" id="taskNodes"><span class="hint">No workers connected.</span></div>
+        <div class="pool-row">
+          <label style="display:flex;align-items:center;gap:.4rem">Shell
+            <select id="taskShell"><option value="auto">auto (bash / PowerShell)</option><option value="bash">bash</option><option value="sh">sh</option><option value="powershell">PowerShell</option><option value="pwsh">pwsh</option><option value="cmd">cmd</option></select>
+          </label>
+          <label style="display:flex;align-items:center;gap:.4rem;flex:1;min-width:14rem">Folder <input id="taskDir" placeholder="their home folder" style="flex:1"></label>
+        </div>
+        <textarea id="taskCmd" rows="3" style="margin:0;width:100%" placeholder="nvidia-smi"></textarea>
+        <div class="pool-row">
+          <button type="button" id="taskSend">Send to selected workers</button>
+          <span class="status-text" id="taskMsg"></span>
+        </div>
+      </div>
+      <div id="taskList"><div class="hint">No tasks yet.</div></div>
+    </div>
+  </section>
+
+  <section class="panel prompt" id="promptPanel">
+    <h2>Run inference</h2>
     <div class="form-grid">
       <label>Node<select id="node"><option value="">no ready node</option></select></label>
       <label>Model<select id="model"><option value="">—</option></select></label>
@@ -257,6 +376,7 @@
   <section class="panel term-panel" id="termPanel" hidden>
     <div class="panel-head"><h2>Terminal</h2><span class="note" id="termState">this computer · your user account</span></div>
     <div class="term-bar" id="quick">
+      <select id="termNode" title="Which computer the shell runs on"><option value="local">this computer</option></select>
       <button type="button" data-cmd="pair --ttl 1h">New invitation</button>
       <button type="button" data-cmd="status">Status</button>
       <button type="button" data-cmd="model list">Models</button>
@@ -269,10 +389,24 @@
     <div id="term"></div>
   </section>
 
-  <div class="footer">Totals show every connected laptop's GPUs together. Each inference request runs on one selected node (models are not split across laptops).</div>
+  <section class="panel" id="gridPanel" hidden>
+    <div class="panel-head"><h2>Terminal grid</h2><span class="note" id="gridNote">one terminal per worker</span></div>
+    <div class="term-bar">
+      <button type="button" id="gridConnect">Connect all workers</button>
+      <label class="switch"><input type="checkbox" id="gridLocal"> include this computer</label>
+      <label class="switch" title="Keys typed in any ticked pane go to every ticked pane"><input type="checkbox" id="gridBroadcast"> type into all ticked panes</label>
+      <span style="flex:1"></span>
+      <label class="switch">columns <select id="gridCols"><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option></select></label>
+    </div>
+    <div class="grid" id="grid"><div class="hint" style="padding:1rem">No worker has allowed a terminal yet. The owner turns it on in their own dashboard.</div></div>
+  </section>
+
+  <div class="footer">Totals show every connected laptop's GPUs together. With the pool on, node "local" runs the model across all shared GPUs; otherwise a request runs on the one node you select.</div>
 </main>
 <script src="/static/xterm.js"></script>
 <script src="/static/xterm-addon-fit.js"></script>
+<script src="/static/tasks.js"></script>
+<script src="/static/fleet.js"></script>
 <script>
 (function () {
   "use strict";
@@ -318,12 +452,55 @@
     setText("statNodesSub", "healthy / total");
     setText("statGPUs", String(a.gpus));
     setText("statVRAM", fmtBytes(a.vram_total_bytes));
-    setText("statVRAMSub", "aggregate, not pooled");
+    var pool = localPool(data);
+    setText("statVRAMSub", pool && pool.state === "ready" && pool.workers.length ? "pooled across " + (pool.workers.length + 1) + " computers" : "sum of every GPU");
     setText("statFree", fmtBytes(a.vram_free_bytes));
     setText("statRAM", fmtBytes(a.ram_available_bytes));
     setText("statRAMSub", fmtBytes(a.ram_total_bytes) + " total");
     setText("statModels", String(a.models.length));
     setText("scope", data.scope);
+  }
+
+  function localPool(data) {
+    var local = (data.nodes || []).find(function (n) { return n.name === "local"; });
+    return local && local.status && local.status.pool ? local.status.pool : null;
+  }
+  function shortName(name) { return name.indexOf("worker-") === 0 ? name.slice(0, 15) + "…" : name; }
+
+  function renderPool(data) {
+    var pool = localPool(data);
+    if (!pool) { $("poolPanel").hidden = true; return; }
+    $("poolPanel").hidden = false;
+    var state = pool.state + (pool.enabled && pool.model ? " · " + pool.model : "");
+    setText("poolState", state);
+    $("poolState").style.color = pool.state === "ready" ? "var(--accent)" : (pool.state === "failed" ? "var(--bad)" : "");
+    $("poolStop").disabled = !pool.enabled;
+    var lending = (pool.sharing || []).length, used = (pool.workers || []).length;
+    var text = lending + (lending === 1 ? " worker is" : " workers are") + " lending a GPU";
+    if (pool.enabled) text += " · " + used + " in use by the running model";
+    if (pool.detail) text += " — " + pool.detail;
+    setText("poolWorkers", text);
+    var log = (pool.log || []).join("\n");
+    $("poolLog").hidden = !pool.enabled || !log;
+    if (log && $("poolLog").textContent !== log) { $("poolLog").textContent = log; $("poolLog").scrollTop = $("poolLog").scrollHeight; }
+    if (pool.enabled && pool.model && !poolTouched) {
+      if (pool.model) $("poolModel").value = pool.model;
+      if (pool.context) $("poolContext").value = String(pool.context);
+    }
+  }
+  var poolTouched = false;
+  async function setPool(enabled) {
+    var body = { enabled: enabled, model: $("poolModel").value, context: Number($("poolContext").value) || 4096 };
+    if (enabled && !body.model) { setText("poolMsg", "register a model first: " + "meshcompute model add NAME /path/model.gguf"); return; }
+    setText("poolMsg", enabled ? "starting…" : "stopping…");
+    try {
+      var res = await post("/api/pool", body);
+      var out = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(out.error || ("HTTP " + res.status));
+      setText("poolMsg", "");
+      poolTouched = false;
+      loadStatus();
+    } catch (err) { setText("poolMsg", "failed: " + err.message); }
   }
 
   function renderGPUs(data) {
@@ -336,7 +513,7 @@
         var free = gpu.free_bytes;
         var used = (typeof total === "number" && typeof free === "number") ? total - free : null;
         rows.push(
-          "<tr><td>" + esc(node.name) + "</td>" +
+          "<tr><td>" + esc(shortName(node.name)) + (node.status.rpc_ready ? "<span class=\"badge\">lending</span>" : "") + "</td>" +
           "<td>" + esc(gpu.name || "unknown GPU") + "</td>" +
           "<td class=\"num\">" + fmtBytes(used) + " <span style=\"color:var(--muted)\">" + pct(used, total) + "</span></td>" +
           "<td class=\"num\">" + fmtBytes(free) + "</td>" +
@@ -350,7 +527,7 @@
   }
 
   function friendlyError(name, err) {
-    if (/HTTP 503/.test(err) && name.indexOf("worker-") === 0) return "offline: the friend's MeshCompute window is closed or their laptop is asleep. They re-run join.cmd (press Enter) to reconnect.";
+    if (/HTTP 503/.test(err) && name.indexOf("worker-") === 0) return "offline: the friend's MeshCompute window is closed or their laptop is asleep. They choose Reconnect (win.bat option 3, or ./linux.sh reconnect).";
     if (/unreachable|authentication/.test(err) && name === "local") return "local agent not running";
     return err;
   }
@@ -365,8 +542,9 @@
       var last = status.last_outcome || "—";
       if (status.tokens_per_second) last += " · " + status.tokens_per_second.toFixed(1) + " tok/s";
       if (node.error) last = friendlyError(node.name, node.error);
-      else if (node.healthy && !status.backend_ready && node.name !== "local") last = "connected · no model loaded (run llama.cpp backend on that laptop)";
-      return "<tr><td>" + esc(node.name) + "</td><td>" + state + "</td><td>" + backendState +
+      else if (node.healthy && !status.backend_ready && node.name !== "local") last = status.rpc_ready ? "connected · lending its GPU to the pool" : "connected · telemetry only (no llama.cpp on that laptop)";
+      var badges = (status.rpc_ready ? "<span class=\"badge\">GPU shared</span>" : "") + (status.terminal ? "<span class=\"badge\">terminal</span>" : "");
+      return "<tr><td title=\"" + esc(node.name) + "\">" + esc(shortName(node.name)) + badges + "</td><td>" + state + "</td><td>" + backendState +
         " <span style=\"color:var(--muted)\">" + (backend.context ? "ctx " + esc(backend.context) : "") + "</span></td>" +
         "<td>" + esc(models || "—") + "</td><td>" + (status.busy ? "busy" : "idle") + "</td><td>" + esc(last) + "</td></tr>";
     });
@@ -408,6 +586,8 @@
     renderGPUs(data);
     renderNodes(data);
     renderControls(data);
+    renderPool(data);
+    renderTermNodes(data);
   }
 
   async function loadStatus() {
@@ -573,6 +753,29 @@
 
   // ---------- terminal ----------
   var term = null, fit = null, termId = null, termOffset = -1, termAbort = null, inputQueue = "", inputBusy = false;
+  var termNode = "local", localTerminal = true, remoteTerminal = false;
+  function termWhere() { return termNode === "local" ? "this computer · your user account" : shortName(termNode) + " · their user account"; }
+  // The computer picker lists this computer and every worker whose owner allowed a terminal.
+  function renderTermNodes(data) {
+    var select = $("termNode");
+    if (!select || !term) return;
+    var options = localTerminal ? [["local", "this computer"]] : [];
+    if (remoteTerminal) data.nodes.forEach(function (n) {
+      if (n.name !== "local" && n.healthy && n.status && n.status.terminal) options.push([n.name, shortName(n.name)]);
+    });
+    if (termNode !== "local" && !options.some(function (o) { return o[0] === termNode; })) options.push([termNode, shortName(termNode) + " (offline)"]);
+    var key = JSON.stringify(options);
+    if (select.dataset.key === key) return;
+    select.dataset.key = key;
+    select.textContent = "";
+    options.forEach(function (o) {
+      var option = document.createElement("option");
+      option.value = o[0]; option.textContent = o[1];
+      select.appendChild(option);
+    });
+    select.value = termNode;
+    if (select.value !== termNode && options.length) { termNode = options[0][0]; select.value = termNode; openShell(false); }
+  }
   function post(url, body) {
     return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   }
@@ -590,7 +793,7 @@
     if (inputQueue) flushInput();
   }
   function sendInput(data) { inputQueue += data; flushInput(); }
-  function saveSession() { try { sessionStorage.setItem("meshTerm", termId || ""); } catch (_) {} }
+  function saveSession() { try { sessionStorage.setItem("meshTerm", termId || ""); sessionStorage.setItem("meshTermNode", termNode); } catch (_) {} }
   async function openShell(reuse) {
     if (termAbort) termAbort.abort();
     termId = null; termOffset = -1;
@@ -599,15 +802,17 @@
     }
     if (!termId) {
       term.reset();
-      var res = await post("/api/term/open", { cols: term.cols, rows: term.rows });
+      setText("termState", "connecting to " + termWhere() + "…");
+      var res = await post("/api/term/open", { node: termNode, cols: term.cols, rows: term.rows });
       var body = await res.json().catch(function () { return {}; });
-      if (!res.ok) { term.write("\r\n\x1b[31m" + (body.error || "terminal unavailable") + "\x1b[0m\r\n"); setText("termState", "unavailable"); return; }
+      if (!res.ok) { term.write("\r\n\x1b[31m" + (body.error || "terminal unavailable") + "\x1b[0m\r\n\x1b[33m[press Enter to try again]\x1b[0m\r\n"); setText("termState", "unavailable"); saveSession(); return; }
       termId = body.id;
     } else {
       term.reset();
     }
     saveSession();
-    setText("termState", "connected · this computer · your user account");
+    setText("termState", "connected · " + termWhere());
+    Array.prototype.forEach.call($("quick").querySelectorAll("button[data-cmd]"), function (b) { b.hidden = termNode !== "local"; });
     streamShell(termId);
     post("/api/term/resize", { id: termId, cols: term.cols, rows: term.rows });
   }
@@ -665,6 +870,13 @@
       b.title = line;
       b.addEventListener("click", function () { if (termId) { sendInput(line + "\r"); term.focus(); } });
     });
+    try { termNode = sessionStorage.getItem("meshTermNode") || "local"; } catch (_) { termNode = "local"; }
+    if (termNode === "local" && !localTerminal) termNode = "";
+    $("termNode").addEventListener("change", function () {
+      if (termId) post("/api/term/close", { id: termId });
+      termNode = $("termNode").value; termId = null;
+      openShell(false); term.focus();
+    });
     $("termNew").addEventListener("click", function () { if (termId) post("/api/term/close", { id: termId }); termId = null; openShell(false); term.focus(); });
     $("termMax").addEventListener("click", function () {
       var max = $("termPanel").classList.toggle("max");
@@ -674,7 +886,9 @@
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape" && $("termPanel").classList.contains("max") && e.shiftKey) $("termMax").click();
     });
-    openShell(true);
+    if (window.__meshData) renderTermNodes(window.__meshData);
+    if (termNode) openShell(true);
+    else { setText("termState", "choose a computer that allowed a terminal"); }
   }
 
   async function loadInfo() {
@@ -687,10 +901,19 @@
         setText("hostAddr", info.host.endpoint);
         setText("reach", info.host.reachability || "");
       }
-      if (info.terminal) setupTerminal(info.cli || "meshcompute");
+      localTerminal = !!info.local_terminal; remoteTerminal = !!info.remote_terminal;
+      if (info.models) {
+        var keep = $("poolModel").value;
+        fillSelect($("poolModel"), info.models, keep);
+      }
+      if (info.terminal && (localTerminal || remoteTerminal)) setupTerminal(info.cli || "meshcompute");
     } catch (_) {}
   }
 
+  $("poolStart").addEventListener("click", function () { setPool(true); });
+  $("poolStop").addEventListener("click", function () { setPool(false); });
+  $("poolModel").addEventListener("change", function () { poolTouched = true; });
+  $("poolContext").addEventListener("input", function () { poolTouched = true; });
   $("invite").addEventListener("click", makeInvite);
   $("refresh").addEventListener("click", loadStatus);
   $("run").addEventListener("click", runInference);

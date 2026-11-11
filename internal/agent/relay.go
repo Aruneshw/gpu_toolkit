@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -23,7 +24,7 @@ func (a *Agent) verifyWorker(cert *x509.Certificate) (string, error) {
 	return security.VerifyWorkerCertificate(a.dir, cert)
 }
 
-func (a *Agent) connectWorker(w http.ResponseWriter, r *http.Request) {
+func (a *Agent) acceptWorker(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost || r.Header.Get("Upgrade") != "meshcompute/1" || !strings.EqualFold(r.Header.Get("Connection"), "Upgrade") || r.ContentLength != 0 || len(r.TransferEncoding) > 0 {
 		http.Error(w, "invalid tunnel request", 400)
 		return
@@ -111,6 +112,10 @@ func (a *Agent) proxyWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path = "/" + path
+	if (path == StreamTerminal || path == StreamTask) && tunnel.IsStream(r) && r.URL.RawQuery == "" {
+		a.proxyStream(w, r, id, path)
+		return
+	}
 	if !allowedOperation(path, r.Method) || r.URL.RawQuery != "" {
 		http.NotFound(w, r)
 		return
@@ -122,11 +127,20 @@ func (a *Agent) proxyWorker(w http.ResponseWriter, r *http.Request) {
 		a.mu.Unlock()
 		if ok {
 			if _, err := a.verifyWorker(cert); err == nil {
-				cached.Busy = true
+				// Every connection of this worker is in use right now.
 				encode(w, cached)
 				return
 			}
 		}
+	}
+	if path == "/v1/status" {
+		st, err := a.workerStatus(r.Context(), id)
+		if err != nil {
+			http.Error(w, "worker disconnected, busy, or unauthorized; request not retried", 503)
+			return
+		}
+		encode(w, st)
+		return
 	}
 	request := r.Clone(r.Context())
 	request.URL.Path = path
@@ -140,19 +154,6 @@ func (a *Agent) proxyWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-	if path == "/v1/status" && resp.StatusCode == http.StatusOK {
-		b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		var st Status
-		if err != nil || json.Unmarshal(b, &st) != nil || st.NodeID != id {
-			http.Error(w, "invalid worker status", 502)
-			return
-		}
-		a.mu.Lock()
-		a.workerCache[id] = st
-		a.mu.Unlock()
-		encode(w, st)
-		return
-	}
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(resp.StatusCode)
@@ -185,7 +186,34 @@ func (a *Agent) proxyWorker(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *Agent) connectLoop(ctx context.Context, endpoint string) {
+// workerStatus asks one connected worker for its status through its reverse
+// connection and remembers the answer.
+func (a *Agent) workerStatus(ctx context.Context, id string) (Status, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://worker.internal/v1/status", nil)
+	if err != nil {
+		return Status{}, err
+	}
+	resp, err := a.broker.RoundTrip(request, id, a.verifyWorker)
+	if err != nil {
+		return Status{}, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var st Status
+	if err != nil || resp.StatusCode != http.StatusOK || json.Unmarshal(b, &st) != nil || st.NodeID != id {
+		return Status{}, errors.New("invalid worker status")
+	}
+	a.mu.Lock()
+	a.workerCache[id] = st
+	a.mu.Unlock()
+	return st, nil
+}
+
+// connectLoop keeps one outbound connection to the group host. Only the
+// primary loop reports connection state; the others stay quiet.
+func (a *Agent) connectLoop(ctx context.Context, endpoint string, primary bool) {
 	delay := 250 * time.Millisecond
 	cfg, err := security.WorkerTLS(a.dir)
 	if err != nil {
@@ -193,6 +221,10 @@ func (a *Agent) connectLoop(ctx context.Context, endpoint string) {
 		return
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/stream/") {
+			a.serveStream(ctx, w, r)
+			return
+		}
 		if !allowedOperation(r.URL.Path, r.Method) {
 			http.NotFound(w, r)
 			return
@@ -201,11 +233,14 @@ func (a *Agent) connectLoop(ctx context.Context, endpoint string) {
 	})
 	failures, connected := 0, false
 	announce := func() {
-		if !connected {
+		if !connected && primary {
 			a.log.Printf("event=worker_connection state=connected host=%s", endpoint)
 			fmt.Fprintf(a.log.Writer(), "Connected to the group host %s. Keep this window open; your GPU is now visible on the host dashboard.\n", endpoint)
 		}
 		connected, failures = true, 0
+		if primary {
+			a.setLink(endpoint, true)
+		}
 	}
 	for ctx.Err() == nil {
 		start := time.Now()
@@ -225,13 +260,18 @@ func (a *Agent) connectLoop(ctx context.Context, endpoint string) {
 				delay *= 2
 			}
 			failures++
-			if connected || failures == 1 || failures%24 == 0 {
+			if !primary {
+				// Older hosts accept one connection per worker; stay quiet.
+			} else if connected || failures == 1 || failures%24 == 0 {
 				a.log.Printf("event=worker_connection state=retrying reason=%q", connectionReason(err))
 			}
-			if connected || failures == 3 {
+			if primary && (connected || failures == 3) {
 				fmt.Fprintf(a.log.Writer(), "Cannot reach the group host %s: %s.\n  Still retrying. If the host restarted on a new address, ask for a NEW invitation and run: meshcompute join <NEW-INVITATION>\n", endpoint, connectionReason(err))
 			}
 			connected = false
+			if primary {
+				a.setLink(endpoint, false)
+			}
 		}
 		// Replenish a consumed connection promptly. Failed handshakes back off.
 		pause := time.Duration(rand.IntN(50)) * time.Millisecond

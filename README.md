@@ -15,7 +15,7 @@
 
 <p align="center">
   <b>Bring your friends' laptops and GPUs together in one dashboard, from anywhere.</b><br>
-  One host, any number of friends, no VPN, no port forwarding, no IPv6 required.
+  One host, any number of friends, no port forwarding, no IPv6 required: through a public relay, or over your own Tailscale / WireGuard mesh.
 </p>
 
 ---
@@ -31,11 +31,19 @@
 - **Works from any network.** By default the host goes through the public relay
   **bore.pub**, so it does not matter that phone hotspots rotate IPv6 every few
   minutes, that a campus is behind CGNAT, or that Wi-Fi isolates clients.
-- **Run AI on any member.** Send a prompt to a chosen laptop's `llama.cpp`
-  backend and stream the answer back into the dashboard.
-- **Built-in terminal.** A real Linux shell in the dashboard (colours, Ctrl-C,
-  tab completion, `vim`, `htop`), with buttons for *New invitation*, *Status*,
-  *Doctor* and `nvidia-smi`.
+- **Or over your own mesh VPN.** `host --mesh auto` (menu: *Host on a VPN*)
+  listens on this computer's Tailscale or WireGuard address, so every computer
+  on the same VPN connects directly with no relay in between.
+- **Pool every GPU into one model.** Click *Start pool*: the host runs one
+  `llama.cpp` server and spreads the model's layers over its own GPU and every
+  friend's GPU (llama.cpp RPC). Friends lend their GPU automatically when they
+  join; the pool reloads by itself when a laptop joins or leaves.
+- **Run AI on any member.** Or send a prompt to one chosen laptop's own
+  `llama.cpp` backend and stream the answer back into the dashboard.
+- **Terminal on any laptop.** A real shell in the dashboard (colours, Ctrl-C,
+  tab completion, `vim`, `htop`) on this computer, and on any friend's laptop
+  whose owner allowed it when joining: an SSH-like session with no SSH server,
+  port or key to set up.
 - **Secure by construction.** TLS 1.3 mutual authentication with a pinned host
   certificate runs end to end, even through the relay. One Go binary using only
   the standard library: no runtime downloads, no services, no admin rights.
@@ -73,7 +81,8 @@ All menu options:
 | 2. Join with a friend's key | `./linux.sh join <KEY>` | option 2 (or `.\join.cmd <KEY>`) |
 | 3. Reconnect after closing the window | `./linux.sh reconnect` | option 3 |
 | 4. Another key for your running group | `./linux.sh invite` | option 4 |
-| 5. Install the GPU AI backend (llama.cpp + small model) | see [docs/backend.md](docs/backend.md) | option 5 |
+| 5. Install llama.cpp (lend this GPU, or pool GPUs as host) | `./linux.sh gpu` | option 5 |
+| 6. Host on your Tailscale / WireGuard address | `./linux.sh mesh` | option 6 (`win.bat mesh`) |
 
 The launchers install or update MeshCompute when needed (the bundled binary, or
 the latest release with its SHA-256 checked). Pasting the whole command a friend
@@ -93,32 +102,119 @@ sent also works: the key is always the last word. Run from a source checkout,
    and then keeps outbound connections open. The host sends status and
    inference requests down those connections; workers never accept inbound
    traffic and cannot reach each other.
-4. The relay only copies encrypted bytes. Use `host --direct` (or
-   `MESHCOMPUTE_RELAY=none`) to host on your own IP instead. See
+4. The relay only copies encrypted bytes. Use `host --mesh auto` to host on a
+   Tailscale / WireGuard address, or `host --direct` (`MESHCOMPUTE_RELAY=none`)
+   to host on your own IP instead. See
    [Creator-hosted groups](docs/host-first-design.md#connectivity).
+5. A terminal or a pooled model is a long-lived stream down the same outbound
+   connection: the host never dials a worker, and nothing on a worker listens
+   beyond loopback.
+
+## Pool every GPU into one model
+
+1. **Every computer** installs the same llama.cpp release once: `./linux.sh gpu`
+   or `win.bat` option 5. (The RPC protocol is version-checked; the scripts
+   pin one release.)
+2. **Friends** join or reconnect as usual. Their laptop starts llama.cpp's RPC
+   server on loopback and reports *GPU shared* on your dashboard.
+3. **You** register a model once (`meshcompute model add NAME /path/model.gguf`,
+   or let `./linux.sh gpu` download a small one) and click **Start pool** (or
+   `meshcompute pool start NAME`, or `host --pool NAME`).
+4. Choose node **local** in *Run inference*: the model now runs across your GPU
+   and every shared GPU. The choice is remembered, and the pool reloads on its
+   own when a laptop joins or leaves.
+
+The model file is only needed on the host; its weights are sent to each worker
+through the encrypted connection (cached there afterwards). That first load is
+as fast as your link: a direct mesh VPN or LAN is much faster than the public
+relay.
+
+## Terminal on a friend's laptop
+
+The friend decides. When joining from the menu they are asked *Allow a remote
+terminal on this computer? [y/N]* (command line: `join --allow-terminal`, or
+later `meshcompute config set allow_terminal true` and reconnect). Their window
+prints a line every time you open a session. On your dashboard, pick the laptop
+in the terminal's computer list. Linux workers give you their login shell;
+Windows 10 (1809) or newer gives PowerShell.
+
+## Live fleet view and one terminal per worker
+
+The host dashboard opens with **Fleet · live**: one card per computer,
+refreshed every 2 seconds, showing GPU utilization, VRAM, GPU temperature and
+power, CPU and RAM, the measured round trip from the host to that laptop
+through its encrypted link, whether it lends its GPU or is in the pool, and
+what you are doing there (tasks running, waiting, finished; terminals open).
+Each card draws the last three minutes of GPU, VRAM and link history. Its
+*Terminal* and *Send task* buttons jump to that laptop.
+
+**Terminal grid** gives every worker that allowed a terminal its own pane
+(5 workers, 5 terminals). Typing in a pane runs on that laptop only; tick
+*type into all ticked panes* to send the same keys to several at once.
+*Connect all workers* opens them all and the dashboard reconnects them after a
+page reload, replaying recent output. All panes share one connection, so the
+browser's connection limit is never reached. A worker's own dashboard shows
+its own live card.
+
+## Send tasks to workers (with their approval)
+
+On the host dashboard, the **Tasks** panel sends one command to every worker
+you tick (shell: auto = bash on Linux, PowerShell on Windows; or bash, sh,
+PowerShell, pwsh, cmd). Each worker gets its own copy; you see its state
+(waiting for approval, running, succeeded, failed, denied, cancelled) and its
+output live, and can cancel it. A task keeps running if the connection drops;
+the host reconnects and resumes the output where it stopped.
+
+Every worker now has its **own dashboard** (`join` and `start` open it, at
+http://127.0.0.1:8082 by default; `--no-open` skips the browser). It shows the
+link to the host, every task with its exact command, and the owner's switches:
+
+- **Tasks from the host:** *ask me each time* (default; Approve, Always allow,
+  Deny), *run automatically*, or *refuse all*. Command line:
+  `join --tasks ask|auto|off`, or `meshcompute config set task_approval ...`.
+- **Allow the host to open a terminal here**, and a button that closes the
+  host's open terminals.
+- **Lend my GPU to the pooled model** (applies on reconnect).
+
+A task runs as the worker's user account, like a terminal. Unapproved tasks
+expire after 10 minutes. Plans for the next steps (layer and KV-cache
+controls, several pools, faster links, multi-hop) are in
+[docs/plan-workers.md](docs/plan-workers.md).
 
 ## Honest scope
 
-- **VRAM is shown together, not merged.** Totals add up every laptop's GPUs so
-  you see the whole group at once, but each prompt runs entirely on **one**
-  selected laptop. A model must fit on that laptop's GPU; models are not split
-  across machines (llama.cpp RPC is deliberately disabled).
-- **Inference needs a backend on the worker.** Telemetry works out of the box;
-  running prompts needs `llama-server` and a registered GGUF on that laptop
-  (`win.bat` option 5 sets this up on Windows with an NVIDIA GPU).
-- **Tested:** unit and race tests; Linux and real-Windows CI that install,
-  upgrade, host, generate a key and join through `linux.sh`/`win.bat`; live
-  joins over IPv6 and through bore.pub; real CPU GGUF inference. **Not yet
-  established:** CUDA inference on a friend's GPU end to end. Details in
+- **Pooling is llama.cpp RPC, with its limits.** The pool splits one model's
+  layers across machines. Every token crosses the network between layers, so
+  speed depends on the link (LAN or a direct mesh VPN is good; a relay on a
+  slow uplink is slow), and a laptop leaving mid-answer fails that answer and
+  reloads the model. Upstream still calls its RPC backend experimental. All
+  computers need the same llama.cpp release.
+- **Without the pool**, totals are only a sum: a prompt runs entirely on the
+  one laptop you select, using that laptop's own `llama-server` and model.
+- **A remote terminal is full shell access** as that laptop's user. It is off
+  until the laptop's owner turns it on.
+- **Tested:** unit and race tests; end-to-end tests of the pool (real
+  processes, sockets and TLS tunnels, with stand-ins for the two llama.cpp
+  programs), of the remote terminal, and of worker consent; a real WireGuard
+  tunnel between two network namespaces (host on the VPN address, join,
+  remote terminal); a live pool with the real llama.cpp b12182 CPU build (a
+  worker's `ggml-rpc-server` held part of the model and answered through the
+  tunnel); Linux and real-Windows CI through `linux.sh`/`win.bat`;
+  live joins over IPv6 and through bore.pub. **Not yet established:** the pool
+  on two physical GPUs, a running Tailscale client, and the Windows remote
+  terminal on a physical PC. Details in
   [docs/validation.md](docs/validation.md).
 
 ## Requirements
 
 - Linux amd64/arm64 or Windows 10/11 amd64. macOS and AMD/Intel GPUs are not
   validated. NVIDIA GPUs are detected through `nvidia-smi`.
-- Outbound internet access on every computer (any network; IPv4 is enough).
-- For inference: a compatible `llama-server` and a licensed GGUF model on the
-  worker. Nothing is downloaded silently.
+- Outbound internet access on every computer (any network; IPv4 is enough),
+  or all computers on one Tailscale / WireGuard network.
+- For the pool: the same llama.cpp release on every computer (`./linux.sh gpu`,
+  `win.bat` option 5) and one licensed GGUF model on the host. For
+  single-laptop inference: `llama-server` and a model on that laptop. Nothing
+  is downloaded silently.
 - To build from source: Go 1.24 or newer (standard library only, builds
   offline). The release packages need no Go.
 
@@ -131,14 +227,20 @@ The launchers above only wrap these commands:
 ```sh
 # host: relay by default; prints a key and the dashboard link
 meshcompute --home ~/.meshcompute-group host --relay bore.pub --ttl 1h --open
+meshcompute --home ~/.meshcompute-group host --mesh auto --open   # Tailscale / WireGuard instead
 meshcompute --home ~/.meshcompute-group pair --ttl 1h      # another key
+meshcompute mesh                                           # which VPN addresses were found
+meshcompute --home ~/.meshcompute-group pool start NAME    # one model across all shared GPUs
 
 # friend: enroll with the key and stay connected (reconnects automatically)
-meshcompute join <KEY>
+meshcompute join <KEY>                                     # add --allow-terminal to permit a shell
 meshcompute start                                          # later: reconnect
 ```
 
-Without a relay, `host --direct --auto` picks this computer's global IPv6 (or a
+`--mesh` takes `auto`, `tailscale`, `wireguard`, an interface name (`wg0`) or
+the VPN IP itself (needed for WireGuard on Windows, whose adapter has no fixed
+name). The group then stays on that address across restarts and refuses to
+move silently if the VPN is down. Without a relay or mesh, `host --direct --auto` picks this computer's global IPv6 (or a
 private IPv4 that needs a router port forward). Each creator hosts an
 independent group. See [Creator-hosted groups](docs/host-first-design.md) for
 addresses, reconnection, inference setup and network requirements.
@@ -283,12 +385,14 @@ starts one too. It listens on `127.0.0.1` only and opens with a one-time token.
 - **Invite a friend:** choose an expiry (30 minutes to 24 hours) and click
   *Generate invitation*: copy-ready commands for Windows and Linux plus a live
   countdown.
-- **Run inference on one node:** pick a ready laptop and model, stream tokens
-  back, stop at any time. Failures are reported and never retried elsewhere.
-- **Terminal (Linux hosts):** a real shell on this computer (xterm.js on a
-  pseudo-terminal) that survives page reloads, with `meshcompute` on PATH and
-  quick buttons for *New invitation*, *Status*, *Models*, *Doctor* and
-  `nvidia-smi`. It never opens a shell on a friend's computer.
+- **Pooled GPUs:** pick a registered model, *Start pool*, and watch which
+  laptops lend a GPU, the load state and llama-server's last log lines.
+- **Run inference:** pick a ready node and model (node *local* is the pool
+  when it is on), stream tokens back, stop at any time. Failures are reported
+  and never retried elsewhere.
+- **Terminal:** a real shell (xterm.js on a pseudo-terminal) that survives
+  page reloads. The computer list offers this computer and every laptop whose
+  owner allowed a terminal.
 
 ## Configuration and commands
 
@@ -302,7 +406,7 @@ State lives under the user config directory (`MESHCOMPUTE_HOME` overrides it):
 
 ```sh
 meshcompute doctor              # redacted, shareable output
-meshcompute network probe NAME  # authenticated RTT/throughput; no RPC
+meshcompute network probe NAME  # authenticated RTT/throughput to one worker
 ```
 
 ## Security boundaries
@@ -325,13 +429,21 @@ Read [docs/security.md](docs/security.md) before deployment. Key points:
   administrative routes and no HTTP enrollment fallback.
 - The dashboard binds `127.0.0.1` only, requires a 256-bit token, rejects
   non-loopback Host headers and cross-origin POSTs, and sets a strict CSP. It
-  reads telemetry, requests inference, issues invitations (group host only),
-  and opens a terminal on the local computer as the local user. Treat the
-  dashboard URL/token like a password: it grants that shell.
+  reads telemetry, requests inference, issues invitations and controls the
+  pool (group host only), and opens a terminal on the local computer and on
+  workers that allowed it. Treat the dashboard URL/token like a password: it
+  grants those shells.
+- A worker serves a terminal only if its owner set `allow_terminal`, only to
+  the pinned group host, and only down its own outbound connection. Workers
+  can never open a terminal on the host or on each other.
+- llama.cpp's RPC server has no authentication of its own, so MeshCompute
+  binds it to loopback and reaches it solely through the mutually
+  authenticated tunnel; `share_gpu off` disables it on a worker.
 - No certificate rotation, CRL/OCSP, HA consensus, rate limiting, or audit log
   shipping is built in. Those remain deployment responsibilities.
 - Treat GGUF files and backend binaries as untrusted inputs. Never expose
-  `llama.cpp` RPC to an open network.
+  `llama.cpp` RPC to an open network yourself; a worker that lends its GPU
+  trusts the group host with that RPC server's parsers.
 
 On Windows, privacy depends on the inherited ACLs of the user profile; Unix mode
 bits and directory `fsync` are not portable and are substituted accordingly.

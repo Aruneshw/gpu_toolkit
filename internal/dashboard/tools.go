@@ -7,9 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"meshcompute/internal/agent"
+	"meshcompute/internal/model"
 	"meshcompute/internal/security"
 	"meshcompute/internal/sse"
 	"meshcompute/internal/terminal"
+	"meshcompute/internal/tunnel"
 	"net"
 	"net/http"
 	"net/url"
@@ -106,13 +109,90 @@ func (r *Remote) Info() HostInfo {
 
 type infoProvider interface{ Info() HostInfo }
 
+// TerminalDialer opens a shell stream on a worker that allowed it.
+type TerminalDialer interface {
+	DialTerminal(ctx context.Context, node string) (io.ReadWriteCloser, error)
+}
+
+// Pooler controls the group host's pooled model.
+type Pooler interface {
+	SetPool(ctx context.Context, enabled bool, model string, contextSize int) (agent.PoolStatus, error)
+	Models() []string
+}
+
+// ErrTerminalDenied means the worker's owner has not allowed remote terminals.
+var ErrTerminalDenied = errors.New("the owner of that computer has not allowed remote terminals; they enable it with: meshcompute config set allow_terminal true (then reconnect)")
+
+// DialTerminal reaches a worker's shell through this host's agent, which
+// forwards it down the worker's own authenticated connection.
+func (r *Remote) DialTerminal(ctx context.Context, node string) (io.ReadWriteCloser, error) {
+	if !r.c.GroupHost || !strings.HasPrefix(node, "worker-") {
+		return nil, errors.New("remote terminals are available for workers of a group you host")
+	}
+	endpoint, err := r.endpoint(ctx, node)
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := security.ClientTLS(r.dir)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := tunnel.DialStream(ctx, "https://"+u.Host, u.Path+agent.StreamTerminal, cfg)
+	if err != nil {
+		if strings.Contains(err.Error(), "HTTP 403") {
+			return nil, ErrTerminalDenied
+		}
+		return nil, errors.New("that computer is offline or busy; try again in a few seconds")
+	}
+	return conn, nil
+}
+
+// SetPool turns the pooled model on or off on this group host.
+func (r *Remote) SetPool(ctx context.Context, enabled bool, name string, contextSize int) (agent.PoolStatus, error) {
+	var st agent.PoolStatus
+	if !r.c.GroupHost {
+		return st, errors.New("the pool runs on a group host; start one with: meshcompute host")
+	}
+	if enabled {
+		// Fail with a useful message before asking the agent.
+		if _, err := model.Get(filepath.Join(r.dir, "models"), name); err != nil {
+			return st, errors.New("that model is not registered on this computer")
+		}
+	}
+	cl, err := security.Client(r.dir)
+	if err != nil {
+		return st, err
+	}
+	defer cl.CloseIdleConnections()
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = readJSON(ctx, cl, r.c.LocalEndpoint(), "/v1/pool", map[string]any{"enabled": enabled, "model": name, "context": contextSize}, &st)
+	return st, err
+}
+
+// Models lists the models registered on this computer.
+func (r *Remote) Models() []string {
+	names := []string{}
+	entries, err := model.List(filepath.Join(r.dir, "models"))
+	if err != nil {
+		return names
+	}
+	for _, e := range entries {
+		names = append(names, e.Name)
+	}
+	return names
+}
+
 // EnableTerminal turns on the browser shell for the local user. The shell
 // starts in the user's home directory with MESHCOMPUTE_HOME pointing at dir
 // and this executable first on PATH, so meshcompute commands work directly.
 func (s *Server) EnableTerminal(dir string) {
-	if runtime.GOOS != "linux" {
-		return // the pseudo-terminal backend is Linux only
-	}
+	// Local shells need Linux or Windows; shells on workers work from any host.
+	s.localTerm = runtime.GOOS == "linux" || runtime.GOOS == "windows"
 	env := []string{}
 	if dir != "" {
 		if abs, err := filepath.Abs(dir); err == nil {
@@ -157,7 +237,10 @@ func shellQuote(s string) string {
 func (s *Server) toolRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/static/", s.handleStatic)
 	mux.HandleFunc("/api/info", s.handleInfo)
+	s.taskRoutes(mux)
+	s.gridRoutes(mux)
 	mux.HandleFunc("/api/invite", s.handleInvite)
+	mux.HandleFunc("/api/pool", s.handlePool)
 	mux.HandleFunc("/api/term/open", s.handleTermOpen)
 	mux.HandleFunc("/api/term/stream", s.handleTermStream)
 	mux.HandleFunc("/api/term/input", s.handleTermInput)
@@ -193,7 +276,11 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	resp := map[string]any{"invites": s.inviter != nil, "terminal": s.term != nil, "cli": s.cli, "download": ReleasesURL}
+	_, remoteTerm := s.cluster.(TerminalDialer)
+	resp := map[string]any{"role": s.role, "tasks": s.tasks != nil || s.worker != nil, "invites": s.inviter != nil, "terminal": s.term != nil, "local_terminal": s.term != nil && s.localTerm, "remote_terminal": s.term != nil && remoteTerm, "cli": s.cli, "download": ReleasesURL}
+	if p, ok := s.cluster.(Pooler); ok {
+		resp["models"] = p.Models()
+	}
 	if p, ok := s.cluster.(infoProvider); ok {
 		resp["host"] = p.Info()
 	}
@@ -257,10 +344,33 @@ func (s *Server) session(w http.ResponseWriter, id string) (*terminal.Session, b
 	return sess, true
 }
 
+func (s *Server) handlePool(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Enabled bool   `json:"enabled"`
+		Model   string `json:"model"`
+		Context int    `json:"context"`
+	}
+	if !decode(w, r, 1024, &req) {
+		return
+	}
+	p, ok := s.cluster.(Pooler)
+	if !ok {
+		writeError(w, http.StatusNotFound, "the pool is not available on this dashboard")
+		return
+	}
+	st, err := p.SetPool(r.Context(), req.Enabled, strings.TrimSpace(req.Model), req.Context)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, st)
+}
+
 func (s *Server) handleTermOpen(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Cols int `json:"cols"`
-		Rows int `json:"rows"`
+		Node string `json:"node"`
+		Cols int    `json:"cols"`
+		Rows int    `json:"rows"`
 	}
 	if !decode(w, r, 1024, &req) {
 		return
@@ -269,20 +379,60 @@ func (s *Server) handleTermOpen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "terminal is not enabled on this dashboard")
 		return
 	}
-	sess, err := s.term.Open(req.Cols, req.Rows)
+	var sess *terminal.Session
+	var err error
+	if req.Node == "" || req.Node == "local" {
+		sess, err = s.term.Open(req.Cols, req.Rows)
+	} else {
+		dialer, ok := s.cluster.(TerminalDialer)
+		if !ok {
+			writeError(w, http.StatusNotFound, "remote terminals are not available on this dashboard")
+			return
+		}
+		var stream io.ReadWriteCloser
+		if stream, err = dialer.DialTerminal(r.Context(), req.Node); err == nil {
+			sess, err = s.term.Attach(stream, req.Cols, req.Rows)
+		}
+	}
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	writeJSON(w, map[string]string{"id": sess.ID})
+	node := req.Node
+	if node == "" {
+		node = "local"
+	}
+	s.term.Label(sess, node)
+	writeJSON(w, map[string]string{"id": sess.ID, "node": node})
 }
 
 func (s *Server) handleTermInput(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID   string `json:"id"`
 		Data string `json:"data"`
+		// IDs, instead of ID, types the same input into several shells
+		// ("type into all"). Shells that ended are skipped.
+		IDs []string `json:"ids"`
 	}
 	if !decode(w, r, 256<<10, &req) {
+		return
+	}
+	if len(req.IDs) > 0 {
+		if s.term == nil || len(req.IDs) > maxMulti {
+			writeError(w, http.StatusBadRequest, "invalid sessions")
+			return
+		}
+		written := 0
+		for _, id := range req.IDs {
+			if sess, ok := s.term.Get(id); ok && sess.Write([]byte(req.Data)) == nil {
+				written++
+			}
+		}
+		if written == 0 {
+			writeError(w, http.StatusGone, "terminal sessions ended")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	sess, ok := s.session(w, req.ID)

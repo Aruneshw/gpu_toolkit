@@ -19,43 +19,46 @@ func ioctl(fd, req, arg uintptr) error {
 
 // start launches cmd as the session leader of a new pseudo-terminal using
 // only the standard library (/dev/ptmx, TIOCSPTLCK, TIOCGPTN).
-func start(cmd *exec.Cmd, cols, rows int) (*os.File, error) {
+func start(cmd *exec.Cmd, cols, rows int) (console, process, error) {
 	ptmx, err := os.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_NOCTTY|syscall.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, fmt.Errorf("open pseudo-terminal: %w", err)
+		return nil, nil, fmt.Errorf("open pseudo-terminal: %w", err)
 	}
 	var unlock int32
 	if err := ioctl(ptmx.Fd(), syscall.TIOCSPTLCK, uintptr(unsafe.Pointer(&unlock))); err != nil {
 		ptmx.Close()
-		return nil, fmt.Errorf("unlock pseudo-terminal: %w", err)
+		return nil, nil, fmt.Errorf("unlock pseudo-terminal: %w", err)
 	}
 	var n uint32
 	if err := ioctl(ptmx.Fd(), syscall.TIOCGPTN, uintptr(unsafe.Pointer(&n))); err != nil {
 		ptmx.Close()
-		return nil, fmt.Errorf("pseudo-terminal number: %w", err)
+		return nil, nil, fmt.Errorf("pseudo-terminal number: %w", err)
 	}
 	tty, err := os.OpenFile(fmt.Sprintf("/dev/pts/%d", n), os.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
 		ptmx.Close()
-		return nil, fmt.Errorf("open terminal: %w", err)
+		return nil, nil, fmt.Errorf("open terminal: %w", err)
 	}
 	defer tty.Close()
-	if err := resize(ptmx, cols, rows); err != nil {
+	pty := &ptyFile{ptmx}
+	if err := pty.Resize(cols, rows); err != nil {
 		ptmx.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 	if err := cmd.Start(); err != nil {
 		ptmx.Close()
-		return nil, fmt.Errorf("start shell: %w", err)
+		return nil, nil, fmt.Errorf("start shell: %w", err)
 	}
-	return ptmx, nil
+	return pty, command{cmd}, nil
 }
 
-func resize(pty *os.File, cols, rows int) error {
+type ptyFile struct{ *os.File }
+
+func (p *ptyFile) Resize(cols, rows int) error {
 	ws := struct{ Row, Col, X, Y uint16 }{uint16(rows), uint16(cols), 0, 0}
-	return ioctl(pty.Fd(), syscall.TIOCSWINSZ, uintptr(unsafe.Pointer(&ws)))
+	return ioctl(p.Fd(), syscall.TIOCSWINSZ, uintptr(unsafe.Pointer(&ws)))
 }
 
 func killGroup(cmd *exec.Cmd) {

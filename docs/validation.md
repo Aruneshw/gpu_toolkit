@@ -203,7 +203,8 @@ visible but not used for inference.
   validation, and the source-build `install.ps1` is not executed in CI.
 - A physical two-machine VPN deployment, firewall behavior, or WAN reliability.
 - macOS, AMD, or Intel GPU targets.
-- Any distributed/model-parallel inference. RPC remains disabled and unclaimed.
+- Pooled inference with real llama.cpp binaries (see 2026-11-11 below for what
+  was and was not run).
 
 ## 2026-11-10: address moves, re-join, dashboard invitations and terminal
 
@@ -270,3 +271,122 @@ the bore relay by default.
   (`TestWorkerConnectsWhenLocalPortBusy`).
 - Not verified: the friend's Windows PC joining through the relay (pending
   their next attempt with a new key).
+
+## 2026-11-11: mesh VPN hosting, remote terminal, pooled GPUs
+
+Executed on the Linux development laptop (Parrot, kernel 7.2.11, RTX 3050 6 GB):
+
+- `go test ./... -count=1` and `go test -race` on the changed packages pass.
+  New tests: `TestPoolAndRemoteTerminalEndToEnd` (a worker lends its "GPU",
+  the host starts one server whose `--rpc` endpoints are loopback forwarders
+  into the worker's TLS tunnel, inference runs through it, the dashboard path
+  opens a shell on the worker, the pool recovers alone when the worker leaves,
+  a worker certificate cannot control the pool);
+  `TestRemoteTerminalNeedsWorkerConsent`; `TestRemoteShellOverStream`.
+  The two llama.cpp programs are stand-ins built into the test binary (an echo
+  server and an HTTP fixture that verifies every `--rpc` endpoint), so these
+  tests prove the plumbing, not llama.cpp.
+- **WireGuard, real tunnel.** Two network namespaces joined by a veth pair,
+  kernel WireGuard between them (`wg` from Debian's wireguard-tools). `host
+  --mesh auto` detected `wg0` and hosted on `10.66.0.1:7443`; the worker in
+  the other namespace joined through the tunnel; the dashboard opened a
+  terminal on it; the host port was not reachable on the underlay address;
+  a restart without flags stayed on the mesh address; with the interface down
+  the host refused to move the group.
+- **Remote terminal, live.** Host and worker as separate processes on
+  loopback: `/api/term/open` with the worker's ID, input, streamed output and
+  exit code 4 returned through the tunnel; the worker window printed the
+  session notice.
+- **Found and fixed:** `nvidia-smi` takes about 5.5 s per call on this
+  machine. Every status request ran it, so host, worker and pool polls timed
+  each other out. The agent now caches discovery (one run at a time, refreshed
+  in the background).
+- Static check of the pinned llama.cpp release b12182 (not executed): the
+  Linux archive contains `llama-server` and `ggml-rpc-server`, whose option
+  strings include `--host`, `--port`, `-c/--cache` and `--rpc`.
+
+- **Real llama.cpp pool (CPU build), 2026-11-11 evening.** `scripts/linux-gpu-setup.sh`
+  installed b12182 (checksum verified; CPU variant, as this laptop has no
+  Vulkan loader). Host and worker as separate processes with their own state
+  directories; the worker joined with `--allow-terminal` and started
+  `ggml-rpc-server` on loopback. `pool start smol` (SmolLM2-135M Q8_0) reached
+  `ready`: `llama-server ... --rpc 127.0.0.1:<forwarder>`, with sockets
+  showing llama-server -> host forwarder -> TLS tunnel -> worker ->
+  `ggml-rpc-server`, and the RPC server holding 29 MB of the model's tensors.
+  `meshcompute run smol` and a direct `/completion` both generated text at
+  about 25 tokens/s. Through `/api/term/open` with the worker's ID, the shell's
+  parent process was the worker agent; output, resize (30x100 to 40x120) and
+  exit code 3 came back through the tunnel.
+- `make verify` (gofmt, vet, tests, cross-builds, offline build) and
+  `go test -race ./...` pass; the agent package passed three repeated runs.
+- Mesh detection in a user network namespace: `wg0` (10.8.0.1) was reported
+  as WireGuard and `tailscale0` (100.101.102.103) as Tailscale; `host --mesh
+  tailscale` and `host --mesh wireguard` each hosted on the matching address.
+
+Not run:
+
+- **The pool on two physical GPUs.** The run above used the CPU build on one
+  laptop. A GPU run needs the Vulkan (or CUDA) build on both computers:
+  `./linux.sh gpu` / `win.bat` option 5 on each, then *Start pool*.
+- **The Tailscale client itself.** Detection is by interface name, device type
+  and the 100.64.0.0/10 / fd7a:115c:a1e0::/48 ranges; it was exercised with
+  real WireGuard and a stand-in `tailscale0` interface, not a running
+  `tailscaled`.
+- **Windows remote terminal.** The ConPTY backend cross-compiles and has a
+  Windows-only test (`TestWindowsShellRoundTrip`) for CI. Under Wine the
+  pseudo-console starts but Wine does not bind the child's output to it, so
+  it could not be confirmed locally.
+- `scripts/linux-gpu-setup.sh` and the Windows script changes: syntax-checked
+  (`bash -n`) only.
+
+## 2026-11-12: tasks with worker approval, worker dashboard
+
+- New package `internal/task`; tests (race detector): auto-run with output,
+  non-zero exit, approve and deny, cancel kills the process tree, withdraw
+  while waiting, output resumed without loss or duplication after a dropped
+  connection, a restarted worker never re-runs a task it forgot.
+- `TestTasksEndToEnd` (real agents, mutual TLS, both dashboards over HTTP):
+  host sends two tasks; the worker dashboard shows both waiting; the host
+  cannot approve; the owner approves one and denies the other; host and worker
+  output match; "Always allow" saves `task_approval=auto`; the host cancels a
+  running task; with tasks off the host is refused; a worker certificate
+  cannot reach the task route.
+- Live, real binaries on one laptop (host and worker as separate processes):
+  the worker printed and served its dashboard on 127.0.0.1:8082; two tasks
+  sent through the host API showed as waiting with their exact commands
+  (headless Chrome screenshot); one approved (output `499999500000`, exit 0),
+  one denied; the host dashboard showed both results.
+- `make verify` and `GOOS=windows go vet ./...` pass.
+
+Not run: tasks on a real Windows worker (PowerShell and `taskkill` process
+tree handling compile but are untested), and clicking the buttons in a real
+browser (the buttons call the same endpoints the test uses).
+
+## 2026-11-12: live fleet view and terminal grid
+
+- Telemetry: `nvidia-smi` now also reports temperature, power draw and power
+  limit (old 6-column output still parsed); CPU load from `/proc/stat` on
+  Linux and `LoadPercentage` on Windows. Unit tests for both parsers.
+- Dashboard tests (race detector, three runs): fleet sampling (host never
+  pinged, offline worker keeps its history and last-seen time, no resample
+  within 1.5 s, history capped at 90 samples); three local shells over one
+  multiplexed stream with broadcast input, per-session output and exit codes,
+  unknown session reported. One real bug found and fixed: sampling before the
+  first page request crashed on an uninitialized map.
+- `TestFleetAndTerminalGridEndToEnd`: a host and two real workers over mutual
+  TLS. Fleet shows both with measured round trips and the running task on the
+  right card; one shell per worker; input typed for worker A never reaches
+  worker B; "type into all" reaches both; exit codes 5 and 6 arrive over one
+  stream.
+- Browser (`scripts/ui-test.sh`, headless Chrome driven over the DevTools
+  protocol, real binaries, host plus two workers): 36 checks pass, including
+  real keystrokes in the grid panes, the two panes running on two different
+  workers (each shell reports its parent process's state folder), reload
+  re-attaching both panes with their output, *Send task* from a card, and
+  clicking *Approve* on the worker's own page. No JavaScript errors. Added to
+  CI as the "dashboards in headless Chrome" job.
+
+Notes: on loopback the measured round trip through the agent and tunnel is
+about 14 to 19 ms; that per-request overhead is the target of phase 4.
+Not run: the grid with a Windows worker (ConPTY), and a group larger than two
+workers (the session limit is now 24).

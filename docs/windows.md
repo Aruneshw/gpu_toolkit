@@ -214,7 +214,9 @@ The adapter expects the backend at `http://127.0.0.1:8080` by default. If you
 use another loopback port, set `meshcompute config set backend_url
 http://127.0.0.1:<port>` before serving. `--gpu-layers 20` is an example, not a
 fit guarantee; confirm actual offload in the llama-server log and reduce it if
-allocation fails. RPC remains disabled and is not a supported distributed path.
+allocation fails. To lend this PC's GPU to the group host's pooled model
+instead, see [backend.md](backend.md#pooled-gpus-through-llamacpp-rpc): after
+`win.bat` option 5, joining or reconnecting is enough.
 
 ## Dashboard and diagnostics
 

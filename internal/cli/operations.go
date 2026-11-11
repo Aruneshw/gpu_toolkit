@@ -78,8 +78,12 @@ func operational(ctx context.Context, dir string, c config.Config, command strin
 	registry := filepath.Join(dir, "models")
 	switch command {
 	case "start":
-		if len(args) != 0 {
-			return errors.New("start takes no arguments")
+		if len(args) > 1 || len(args) == 1 && args[0] != "--no-open" {
+			return errors.New("usage: start [--no-open]")
+		}
+		if host, reverse, _, err := security.Group(dir); err == nil && reverse && !host {
+			// A group worker: also serve this computer's own dashboard.
+			return serveWorker(ctx, dir, c, out, len(args) == 0)
 		}
 		return agent.New(dir, c, out).Serve(ctx)
 	case "status":
@@ -155,7 +159,7 @@ func operational(ctx context.Context, dir string, c config.Config, command strin
 		_, backendErr := b.Health(bounded)
 		provider, _ := network.DetectTailscale(bounded)
 		// Explicit allowlist: no raw configuration, addresses, paths, aliases, or errors.
-		return writeJSON(out, map[string]any{"os": s.OS, "arch": s.Arch, "logical_cpus": s.LogicalCPUs, "ram_total_bytes": s.RAMTotalBytes, "ram_available_bytes": s.RAMAvailableBytes, "gpu_count": len(s.GPUs), "gpu_discovery_available": s.GPUDiscoveryAvailable, "identity_present": identityErr == nil, "llama_server_on_path": binaryErr == nil, "backend_ready": backendErr == nil, "tailscale_available": provider.Available, "distributed_verified": false, "guidance": "Missing backend: follow docs/backend.md. Missing identity: cluster create or join. VPN setup is explicit. CPU availability and unknown hardware metrics are not inferred."})
+		return writeJSON(out, map[string]any{"os": s.OS, "arch": s.Arch, "logical_cpus": s.LogicalCPUs, "ram_total_bytes": s.RAMTotalBytes, "ram_available_bytes": s.RAMAvailableBytes, "gpu_count": len(s.GPUs), "gpu_discovery_available": s.GPUDiscoveryAvailable, "identity_present": identityErr == nil, "llama_server_on_path": binaryErr == nil, "backend_ready": backendErr == nil, "tailscale_available": provider.Available, "mesh_interfaces": len(meshAddresses()), "distributed_verified": false, "guidance": "Missing backend: follow docs/backend.md. Missing identity: cluster create or join. VPN setup is explicit. CPU availability and unknown hardware metrics are not inferred."})
 	case "model":
 		if len(args) == 1 && args[0] == "list" {
 			entries, e := model.List(registry)
@@ -181,7 +185,7 @@ func operational(ctx context.Context, dir string, c config.Config, command strin
 			bounded, cancel := context.WithTimeout(ctx, 3*time.Second)
 			defer cancel()
 			caps, e := b.Health(bounded)
-			return writeJSON(out, map[string]any{"adapter": "llama.cpp", "ready": e == nil, "capabilities": caps, "rpc_enabled": false, "guidance": "Use backend serve with a compatible llama-server binary; see docs/backend.md."})
+			return writeJSON(out, map[string]any{"adapter": "llama.cpp", "ready": e == nil, "capabilities": caps, "guidance": "Use backend serve with a compatible llama-server binary, or on a group host: pool start MODEL. See docs/backend.md."})
 		}
 		if len(args) >= 2 && args[0] == "serve" {
 			binary := ""
@@ -252,7 +256,22 @@ func operational(ctx context.Context, dir string, c config.Config, command strin
 		if e != nil {
 			return e
 		}
-		return writeJSON(out, map[string]any{"measurement": q, "recommendation": networkAdvice(q), "rpc_enabled": false})
+		return writeJSON(out, map[string]any{"measurement": q, "recommendation": networkAdvice(q)})
+	case "mesh":
+		if len(args) != 0 {
+			return errors.New("mesh takes no arguments")
+		}
+		found := meshAddresses()
+		if found == nil {
+			found = []meshAddress{}
+		}
+		guidance := "No mesh VPN interface is up. Connect Tailscale (tailscale up) or WireGuard (wg-quick up wg0) on every computer, then host with: meshcompute host --mesh auto"
+		if len(found) > 0 {
+			guidance = "Host on the mesh with: meshcompute host --mesh auto   (or --mesh " + found[0].Interface + "). Friends on the same VPN then join with the invitation as usual."
+		}
+		return writeJSON(out, map[string]any{"mesh": found, "guidance": guidance})
+	case "pool":
+		return poolCommand(ctx, dir, c, args, out)
 	case "simulate":
 		if len(args) != 0 {
 			return errors.New("simulate takes no arguments")
@@ -262,14 +281,61 @@ func operational(ctx context.Context, dir string, c config.Config, command strin
 		return fmt.Errorf("unknown command %q; run meshcompute help", command)
 	}
 }
+
+// poolCommand controls the pooled model through this host's running agent.
+func poolCommand(ctx context.Context, dir string, c config.Config, args []string, out io.Writer) error {
+	const usage = "usage: pool start MODEL [--context 4096] | pool stop | pool status"
+	if len(args) == 0 {
+		return errors.New(usage)
+	}
+	if !c.GroupHost {
+		return errors.New("the pool runs on the group host; start one with: meshcompute host")
+	}
+	cl, e := security.Client(dir)
+	if e != nil {
+		return e
+	}
+	defer cl.CloseIdleConnections()
+	var body any
+	switch args[0] {
+	case "status":
+		if len(args) != 1 {
+			return errors.New(usage)
+		}
+	case "stop":
+		if len(args) != 1 {
+			return errors.New(usage)
+		}
+		body = map[string]any{"enabled": false}
+	case "start":
+		if len(args) < 2 {
+			return errors.New(usage)
+		}
+		contextSize := agent.DefaultPoolContext
+		if e := flags("pool start", args[2:], func(f *flag.FlagSet) { f.IntVar(&contextSize, "context", contextSize, "context size") }); e != nil {
+			return e
+		}
+		body = map[string]any{"enabled": true, "model": args[1], "context": contextSize}
+	default:
+		return errors.New(usage)
+	}
+	var st agent.PoolStatus
+	bounded, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if e := request(bounded, cl, c.LocalEndpoint(), "/v1/pool", body, &st); e != nil {
+		return fmt.Errorf("the group host is not running, or refused: %w", e)
+	}
+	return writeJSON(out, st)
+}
+
 func networkAdvice(q network.Quality) string {
 	if !q.Available || !q.Stable {
 		return "Unstable/unavailable: do not start remote inference; no automatic generation retry."
 	}
 	if q.Latency > 50*time.Millisecond || q.ThroughputBytesPerSecond < 50*1024*1024 {
-		return "Prefer local or one remote worker; avoid partitioned inference over this link."
+		return "Slow link: a pooled model works but generates slowly and takes long to load; prefer one worker's own backend, or a faster link such as a direct mesh VPN connection."
 	}
-	return "Link passes preliminary thresholds only. RPC remains disabled and unverified."
+	return "Link is fast enough for pooled (llama.cpp RPC) inference."
 }
 func run(ctx context.Context, dir string, c config.Config, args []string, in io.Reader, out io.Writer) error {
 	if len(args) == 0 {

@@ -68,6 +68,38 @@ request, including requests on already-open TLS connections. Missing, corrupt,
 or insecure state fails closed. Revocation does not cancel already-authorized
 in-flight requests or streams.
 
+## Streams: remote terminal and GPU lending
+
+A group host can turn one of a worker's outbound connections into a raw
+stream (`Upgrade: meshcompute-stream/1`). Workers keep four such connections
+ready (at most 32 per worker on the host). Two stream types exist; any other
+path is refused:
+
+- `/v1/stream/term` starts a shell as the worker's user. The worker serves it
+  only when its own configuration has `allow_terminal: true`. That is set by
+  the worker's owner (`join --allow-terminal`, the launcher's question, or
+  `config set allow_terminal true`); the host cannot set it. The worker prints
+  and logs every session. It is full shell access: grant it only to a host you
+  trust as you would an SSH login. Closing the stream kills the shell.
+- `/v1/stream/rpc` pipes bytes to the worker's loopback llama.cpp RPC server,
+  which the agent started itself. That server has no authentication and is
+  not hardened; the tunnel's mutual TLS is the only access control, so the
+  worker trusts the group host with it. `share_gpu off` disables it.
+
+Both are reachable only by the pinned host certificate, down the worker's own
+connection. On the host, `/v1/workers/<id>/v1/stream/term` and `/v1/pool` are
+`SelfOnly`: the dashboard and CLI on the host computer, never a worker. Workers
+cannot open streams to the host or to each other. Revocation closes open
+streams within about a second. Stream contents are not logged.
+
+## Mesh VPN hosting
+
+`host --mesh` only chooses the listen address (a Tailscale, WireGuard, ZeroTier,
+Nebula or NetBird interface). Mutual TLS, pinning and invitations are
+unchanged, so membership of the VPN alone grants nothing: a VPN peer still
+needs an invitation. The VPN adds its own encryption and removes the relay's
+view of connection metadata.
+
 ## Public relay
 
 Group hosts use the public TCP relay bore.pub by default. The relay only copies
