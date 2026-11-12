@@ -9,9 +9,12 @@ import (
 
 func TestParsePaths(t *testing.T) {
 	got := parsePaths(" https://100.64.1.2:7443, http://100.64.1.3:7443, https://[fd7a:115c:a1e0::5]:7443,https://host.example:7443, https://0.0.0.0:1, https://100.64.1.4, https://100.64.1.5:7443/x, https://224.0.0.1:5, https://10.0.0.1:1,https://10.0.0.2:2,https://10.0.0.3:3")
-	want := []string{"https://100.64.1.2:7443", "https://[fd7a:115c:a1e0::5]:7443", "https://10.0.0.1:1", "https://10.0.0.2:2"}
+	want := []string{"https://100.64.1.2:7443", "https://[fd7a:115c:a1e0::5]:7443", "https://10.0.0.1:1", "https://10.0.0.2:2", "https://10.0.0.3:3"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("got %v want %v", got, want)
+	}
+	if n := len(parsePaths(strings.Repeat("https://10.0.0.9:9,", 20))); n != maxPaths {
+		t.Fatalf("kept %d paths, want at most %d", n, maxPaths)
 	}
 	if len(parsePaths("")) != 0 {
 		t.Fatal("empty header")
@@ -23,7 +26,7 @@ func TestParsePaths(t *testing.T) {
 func TestHostPathFallsBack(t *testing.T) {
 	var notes []string
 	h := newHostPaths(t.TempDir(), "https://203.0.113.5:4000", func(s string) { notes = append(notes, s) })
-	h.offer("https://100.64.1.2:7443")
+	h.offer("https://100.64.1.2:7443", "")
 	h.chosen = "https://100.64.1.2:7443"
 	h.result("https://100.64.1.2:7443", false)
 	if h.chosen == "" {
@@ -41,8 +44,8 @@ func TestHostPathFallsBack(t *testing.T) {
 	if _, bad := h.bad["https://100.64.1.2:7443"]; !bad {
 		t.Fatal("failed path not set aside")
 	}
-	ep, cfg := h.current(nil)
-	if ep != "https://203.0.113.5:4000" || cfg != nil {
+	ep, cfg, via := h.current(nil)
+	if ep != "https://203.0.113.5:4000" || cfg != nil || via != "" {
 		t.Fatalf("current %s", ep)
 	}
 	// Results for the invitation's own address never change the choice.
@@ -137,5 +140,13 @@ func TestOutputDevice(t *testing.T) {
 		if got := outputDevice(c, tc.local, tc.workers); got != tc.want {
 			t.Errorf("%+v: %q", tc, got)
 		}
+	}
+}
+
+func TestParseHops(t *testing.T) {
+	id := "worker-" + strings.Repeat("ab", 32)
+	got := parseHops("https://192.168.1.4:5000 " + id + ", https://192.168.1.5:5000 worker-short, https://host.example:1 " + id + ", https://10.1.1.1:2 " + strings.ToUpper(id) + ",junk")
+	if len(got) != 1 || got[0].endpoint != "https://192.168.1.4:5000" || got[0].via != id {
+		t.Fatalf("%+v", got)
 	}
 }

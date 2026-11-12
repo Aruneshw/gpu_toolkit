@@ -20,7 +20,7 @@ const usage = `MeshCompute — separate devices, authenticated inference
 Usage: meshcompute [--home DIR] COMMAND
   install                         initialize user configuration (no downloads)
   config set KEY VALUE            listen | backend_url | allow_terminal true|false |
-                                  task_approval ask|auto|off |
+                                  allow_hop true|false | task_approval ask|auto|off |
                                   share_gpu on|off | rpc_server PATH | llama_server PATH
   cluster create                  create private CA and coordinator identity
   host [--auto|--listen IP:7443] [--public] [--advertise https://IP:7443] [--open]
@@ -29,13 +29,17 @@ Usage: meshcompute [--home DIR] COMMAND
                                   --mesh hosts on a Tailscale/WireGuard address
   mesh                            list this computer's mesh VPN addresses
   pair [--ttl 5m]                 issue a secret, one-use invitation
-  join [CODE|--stdin] [--no-start] [--no-open] [--allow-terminal]
+  join [CODE|--stdin] [--no-start] [--no-open] [--allow-terminal] [--allow-hop]
        [--tasks ask|auto|off] [--no-share-gpu]
                                   enroll with an invite (replaces an old worker
                                   identity, kept as a backup) and start the worker
                                   with its own dashboard; --allow-terminal lets the
-                                  host open a shell here; --tasks decides whether
-                                  commands the host sends need your approval
+                                  host open a shell here; --allow-hop lets other
+                                  workers reach the host through this laptop (it
+                                  forwards encrypted bytes it cannot read) and puts
+                                  it on the host's latency map; --tasks decides
+                                  whether commands the host sends need your approval
+  topology                        host: latency map between the host and workers
   pool start MODEL [--name N] [--context N] [--slots N] [--workers ID,..]
        [--split local=1,ID=3] [--kv q8_0] [--kv-on-host] [--flash on] [--output-layer host] [--no-host-gpu]
                                   host: serve MODEL across shared GPUs (one pool
@@ -154,7 +158,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out io.Writer, versio
 		return hostGroup(ctx, dir, c, args, out)
 	case "config":
 		if len(args) != 3 || args[0] != "set" {
-			return errors.New("usage: config set listen|backend_url|allow_terminal|task_approval|share_gpu|rpc_server|llama_server VALUE")
+			return errors.New("usage: config set listen|backend_url|allow_terminal|allow_hop|task_approval|share_gpu|rpc_server|llama_server VALUE")
 		}
 		switch args[1] {
 		case "listen":
@@ -171,6 +175,12 @@ func Run(ctx context.Context, args []string, in io.Reader, out io.Writer, versio
 				return errors.New("allow_terminal must be true or false")
 			}
 			c.AllowTerminal = on
+		case "allow_hop":
+			on, e := strconv.ParseBool(args[2])
+			if e != nil {
+				return errors.New("allow_hop must be true or false")
+			}
+			c.AllowHop = on
 		case "task_approval":
 			switch args[2] {
 			case "ask", "auto", "off":

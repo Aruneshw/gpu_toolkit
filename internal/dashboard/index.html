@@ -212,6 +212,25 @@
   .hint.warn { color: var(--warn); }
   .badge.path-relay { color: var(--warn); border-color: #6b4e1f; }
   .rpc-line { font: .72rem var(--mono); margin: .2rem 0; }
+  #topoMap, #topoMatrix { padding: .5rem 1rem; }
+  svg.topo { width: 100%; max-width: 760px; height: auto; display: block; margin: 0 auto; }
+  svg.topo .th { fill: var(--accent-dim); stroke: var(--accent); }
+  svg.topo .tw-dot { fill: var(--panel-2); stroke: var(--line); stroke-width: 1.5; }
+  svg.topo .tw-dot.hopper { stroke: var(--accent); }
+  svg.topo .tn { fill: var(--text, #e6edf3); font: 11px var(--mono); text-anchor: middle; }
+  svg.topo .tl { fill: var(--muted); font: 10px var(--mono); text-anchor: middle; paint-order: stroke; stroke: var(--panel); stroke-width: 4px; stroke-linejoin: round; }
+  svg.topo .tl.path-relay { fill: var(--warn); }
+  svg.topo .tl.hopnote { fill: var(--accent); }
+  svg.topo line { stroke-width: 1.6; }
+  svg.topo line.tw { stroke: var(--muted); }
+  svg.topo line.tw.path-mesh, svg.topo line.tw.path-direct, svg.topo line.tw.path-local { stroke: var(--accent); }
+  svg.topo line.tw.path-relay { stroke: var(--warn); stroke-dasharray: 6 4; }
+  svg.topo line.tw.path-hop { stroke: var(--accent); stroke-dasharray: 2 4; }
+  svg.topo line.tp { stroke: var(--line); stroke-width: 1; }
+  svg.topo line.tp.none { stroke-dasharray: 2 6; }
+  table.topo-matrix { border-collapse: collapse; font: .78rem var(--mono); margin-top: .5rem; width: auto; }
+  table.topo-matrix th, table.topo-matrix td { border: 1px solid var(--line); padding: .25rem .5rem; text-align: right; }
+  table.topo-matrix td.self { color: var(--muted); text-align: center; }
   .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; padding: .6rem; }
   .pane { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; min-width: 0; background: #0b1016; }
   .pane.focus { border-color: var(--accent); }
@@ -268,6 +287,12 @@
   <section class="panel" id="fleetPanel" hidden>
     <div class="panel-head"><h2 id="fleetTitle">Fleet · live</h2><span class="note" id="fleetNote">sampling…</span></div>
     <div class="fleet" id="fleet"></div>
+  </section>
+
+  <section class="panel" id="topoPanel" hidden>
+    <div class="panel-head"><h2>Network map</h2><span class="note" id="topoNote">measuring…</span></div>
+    <div id="topoMap"></div>
+    <div id="topoMatrix"></div>
   </section>
 
   <section class="panel" id="invitePanel" hidden>
@@ -372,6 +397,7 @@
       <div class="pool-row">
         <label class="switch"><input type="checkbox" id="setTerminal"> Allow the host to open a terminal here</label>
         <label class="switch"><input type="checkbox" id="setShare"> Lend my GPU to the pooled model <span class="hint">(applies on reconnect)</span></label>
+        <label class="switch" title="This computer then listens on its LAN and mesh-VPN addresses and forwards other workers' encrypted connections to the group host; it cannot read them."><input type="checkbox" id="setHop"> Let other workers reach the host through this computer <span class="hint">(applies when the worker restarts)</span></label>
       </div>
       <div class="pool-row">
         <label style="display:flex;align-items:center;gap:.4rem">Tasks from the host
@@ -460,6 +486,7 @@
 <script src="/static/tasks.js"></script>
 <script src="/static/fleet.js"></script>
 <script src="/static/pools.js"></script>
+<script src="/static/topology.js"></script>
 <script>
 (function () {
   "use strict";

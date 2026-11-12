@@ -76,12 +76,18 @@ Workers never pass activations directly to each other. Consequences:
 - Found while measuring: the output layer's logits (~600 KB per token) were
   the largest per-token transfer; `output_layer` keeps it on the host.
 
-### Phase 5: topology and multi-hop routing
+### Phase 5: topology and multi-hop routing (done 2026-11-12)
 - Workers report their LAN and mesh addresses; the host asks pairs of workers
   to measure each other (authenticated ping) and shows a latency map.
+  Done for workers whose owner allowed hops (`allow_hop`): only they report
+  addresses, listen, and measure. A measurement is a TCP connection time to
+  the other's forwarder, requested by the host over the worker's own
+  authenticated reverse connection; bounded to 16 targets every 5 s.
 - A worker whose path to the host is slow can connect through a nearby worker
   that has a fast path. The relaying worker only forwards encrypted bytes;
-  TLS still ends at the host.
+  TLS still ends at the host. Done: one hop at most (a forwarder always uses
+  its own direct path); a hop is chosen only when twice as fast and 10 ms
+  faster than the best direct path; fallback after two failures.
 
 ## Safety rules kept throughout
 - Tasks and terminals run as the worker's user and are off or ask-first by

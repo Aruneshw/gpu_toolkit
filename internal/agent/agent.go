@@ -50,6 +50,8 @@ type Status struct {
 	Pools []PoolStatus `json:"pools,omitempty"`
 	// Sharing lists the workers able to lend a GPU (group host only).
 	Sharing []string `json:"sharing,omitempty"`
+	// Hop is this worker's forwarder for other workers (allow_hop).
+	Hop *HopStatus `json:"hop,omitempty"`
 	// Links is the host's measured link to each connected worker.
 	Links map[string]LinkStatus `json:"links,omitempty"`
 }
@@ -75,6 +77,9 @@ type Agent struct {
 	links       *links
 	meshPaths   []string   // https endpoints workers may use instead of the relay
 	hostPaths   *hostPaths // worker: which address of the group host to use
+	hop         *hopServer // worker: forwarder for other workers (allow_hop)
+	lastProbe   time.Time  // worker: last latency-map measurement
+	topo        *topology  // host: which workers forward, and their pair times
 	// cfgMu serializes read-modify-write of the saved configuration.
 	cfgMu     sync.Mutex
 	resources resourceCache
@@ -97,6 +102,7 @@ func New(dir string, c config.Config, audit io.Writer) *Agent {
 		a.workerCache = make(map[string]Status)
 		a.pools = newPools(a)
 		a.links = newLinks(a)
+		a.topo = newTopology()
 	}
 	return a
 }
@@ -153,10 +159,14 @@ func (a *Agent) Status(ctx context.Context) (Status, error) {
 	st.TokensPerSecond = a.rate
 	rpc := a.rpc
 	st.Terminal = a.worker && a.c.AllowTerminal && terminalSupported()
+	hop := a.hop
 	if a.worker {
 		st.Tasks = taskPolicy(a.c.TaskApproval)
 	}
 	a.mu.Unlock()
+	if a.worker {
+		st.Hop = hop.status()
+	}
 	if rpc != nil {
 		_, st.RPCReady = rpc.Addr()
 	}
@@ -414,6 +424,7 @@ func decodeSmall(w http.ResponseWriter, r *http.Request, v any) bool {
 func (a *Agent) Handler() http.Handler {
 	api := http.NewServeMux()
 	api.Handle("/v1/ping", network.Handler())
+	api.HandleFunc(probePath, a.handlePeerProbe)
 	api.Handle("/v1/probe", network.Handler())
 	api.HandleFunc("/v1/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -474,6 +485,7 @@ func (a *Agent) Handler() http.Handler {
 		root.Handle("/v1/workers/", security.SelfOnly(a.dir, http.HandlerFunc(a.proxyWorker)))
 		root.Handle("/v1/pool", security.SelfOnly(a.dir, http.HandlerFunc(a.handlePool)))
 		root.Handle("/v1/pools", security.SelfOnly(a.dir, http.HandlerFunc(a.handlePools)))
+		root.Handle("/v1/topology", security.SelfOnly(a.dir, http.HandlerFunc(a.handleTopology)))
 	}
 	root.Handle("/", security.Authorize(a.dir, api))
 	return root
@@ -530,6 +542,8 @@ func (a *Agent) ServeListener(ctx context.Context, listener net.Listener) error 
 		go func() { defer workers.Done(); a.pools.run(ctx) }()
 		workers.Add(1)
 		go func() { defer workers.Done(); a.links.run(ctx) }()
+		workers.Add(1)
+		go func() { defer workers.Done(); a.runTopology(ctx) }()
 	}
 	server := &http.Server{Addr: a.c.Listen, Handler: a.Handler(), TLSConfig: tlsConfig, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: backend.Timeout + 10*time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384, ErrorLog: log.New(io.Discard, "", 0)}
 	done := make(chan struct{})

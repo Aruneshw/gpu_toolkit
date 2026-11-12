@@ -189,6 +189,28 @@ link sets the pace.
   on a host without a GPU (its CPU then computes it), `worker` leaves
   llama.cpp's default.
 
+### Network map and hops through a nearby worker
+
+A worker whose owner allows it (`join --allow-hop`, `config set allow_hop
+true`, or the switch on the worker's own dashboard) helps the others:
+
+- **Hop:** it listens on its LAN and mesh-VPN addresses and forwards other
+  workers' connections to the host over its own direct path. TLS still runs
+  end to end between the other worker and the host, so it only moves
+  encrypted bytes; it forwards to the host and nowhere else, at most 64
+  connections at once, and never through a second hop. A worker whose own
+  path is slow (for example the public relay) tries the forwarders the host
+  tells it about and moves to one only when it is at least twice as fast and
+  10 ms faster; if the forwarder goes away it returns to its own path.
+- **Map:** it also takes part in the host's latency map. The host asks each
+  such worker to time a TCP connection to the others' forwarders (at most 16
+  targets, once every 5 s) and shows the result as a diagram and a matrix
+  under *Network map*, or with `meshcompute topology`. Only the host itself
+  can read the map, since it contains the workers' LAN addresses.
+
+On Windows the first time a worker listens, Windows Firewall may ask whether
+to allow it on private networks.
+
 Measured on one laptop (loopback, so no real network): the tunnel adds about
 0.25 ms per round trip and carries about 200 MiB/s; a 2-worker pool of
 Qwen2.5-0.5B made 12 to 16 round trips per second per worker at 13 to 15
@@ -268,7 +290,9 @@ controls, several pools, faster links, multi-hop) are in
   tunnel); two named pools of one model at once over three workers with
   their own split, KV cache and slot settings (`scripts/pool-test.sh`) and the
   dashboard with five workers (`scripts/ui-test.sh`), both with real
-  llama.cpp; link measurement, mesh-path switching and fallback in Go tests; Linux and real-Windows CI through `linux.sh`/`win.bat`;
+  llama.cpp; link measurement, mesh-path switching and fallback in Go tests;
+  hops through another worker (switching, labels, fallback when it leaves)
+  and the latency map in Go and browser tests; Linux and real-Windows CI through `linux.sh`/`win.bat`;
   live joins over IPv6 and through bore.pub. **Not yet established:** the pool
   on two physical GPUs, a running Tailscale client, and the Windows remote
   terminal on a physical PC. Details in

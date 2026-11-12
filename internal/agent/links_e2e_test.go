@@ -12,9 +12,10 @@ import (
 	"time"
 )
 
-// A host that also listens on a second address (standing in for its mesh-VPN
-// address) offers it to workers; a worker probes it, moves its connections
-// there, and the host measures the link through the tunnel.
+// A host reached through a slow address (standing in for the relay) that
+// also listens on a second address (standing in for its mesh-VPN address)
+// offers it to workers; a worker probes it, moves its connections there,
+// and the host measures the link through the tunnel.
 func TestMeshPathAndLinkMeasurement(t *testing.T) {
 	alt, err := net.Listen("tcp", "127.0.0.2:0")
 	if err != nil {
@@ -28,7 +29,9 @@ func TestMeshPathAndLinkMeasurement(t *testing.T) {
 	hl := listen(t)
 	hc := config.Default()
 	hc.Listen = hl.Addr().String()
-	hc.Advertise = "https://" + hc.Listen
+	// The invitation's address is slow, like a far relay; the mesh path is
+	// then clearly faster even on a loaded machine.
+	hc.Advertise = "https://" + slowProxy(t, hl.Addr().String(), 10*time.Millisecond)
 	hc.GroupHost = true
 	hc.MeshPaths = []string{altAddr}
 	if err := security.InitGroup(hostDir, hc.Listen, hc.Advertise, false); err != nil {

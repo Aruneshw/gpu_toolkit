@@ -52,11 +52,12 @@
     var how = link && link.measured === "tunnel" ? "round trip through the encrypted tunnel the pool uses (median of the last 30 s)" : "time of one status request through the encrypted link, including a TLS handshake";
     return "<span class=\"rtt " + cls + "\" data-rtt title=\"" + how + "\">" + (ms < 0.05 ? "&lt;1" : ms < 10 ? ms.toFixed(1) : Math.round(ms)) + " ms</span>";
   }
-  var pathNames = { relay: "via relay", mesh: "mesh VPN", direct: "direct", local: "same computer" };
+  var pathNames = { relay: "via relay", mesh: "mesh VPN", direct: "direct", local: "same computer", hop: "via worker" };
   function pathBadge(link) {
     if (!link || !pathNames[link.path]) return "";
-    var tip = { relay: "connected through the public TCP relay: works anywhere, but every round trip makes a detour", mesh: "connected over a mesh VPN (Tailscale, WireGuard, ...)", direct: "connected straight to the host's address", local: "a worker on this computer" }[link.path];
-    return "<span class=\"badge path-" + esc(link.path) + "\" data-path=\"" + esc(link.path) + "\" title=\"" + tip + "\">" + pathNames[link.path] + "</span>";
+    var tip = { relay: "connected through the public TCP relay: works anywhere, but every round trip makes a detour", mesh: "connected over a mesh VPN (Tailscale, WireGuard, ...)", direct: "connected straight to the host's address", local: "a worker on this computer", hop: "reaches this host through another worker's forwarder (" + (link.hop_via || "") + "), which only sees encrypted bytes" }[link.path];
+    var text = link.path === "hop" && link.hop_via ? "via " + short(link.hop_via) : pathNames[link.path];
+    return "<span class=\"badge path-" + esc(link.path) + "\" data-path=\"" + esc(link.path) + "\" title=\"" + esc(tip) + "\">" + esc(text) + "</span>";
   }
   function rate(b) {
     return b >= 1048576 ? (b / 1048576).toFixed(1) + " MB/s" : b >= 1024 ? Math.round(b / 1024) + " kB/s" : Math.round(b) + " B/s";
@@ -101,6 +102,7 @@
     poolsOf(n.name).forEach(function (p) { h += "<span class=\"badge\">pool " + esc(p) + "</span>"; });
     h += "</div>";
     h += rpcLine(n.link);
+    if (st.hop) h += "<div class=\"hint\" data-hop>Forwards for other workers at " + esc((st.hop.endpoints || []).join(", ")) + " · " + st.hop.active + " now · " + st.hop.served + " so far</div>";
     h += "<div class=\"gpu-name\">" + esc(gpus.length ? gpus.map(function (g) { return g.name; }).join(" + ") : "no NVIDIA GPU reported") + (res.os ? " · " + esc(res.os) : "") + "</div>";
     if (!n.healthy) {
       var seen = n.last_seen && n.last_seen.indexOf("0001") !== 0 ? new Date(n.last_seen).toLocaleTimeString() : "never";

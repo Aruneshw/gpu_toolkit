@@ -37,6 +37,14 @@ type Config struct {
 	// Mesh names the VPN interface (Tailscale, WireGuard, ...) a group host
 	// listens on; informational.
 	Mesh string `json:"mesh,omitempty"`
+	// AllowHop lets other workers of the group reach the group host through
+	// this worker: it listens on its LAN and mesh-VPN addresses and forwards
+	// their encrypted connections to the host (it cannot read them). It also
+	// takes part in the host's latency map. Off unless the owner turns it on.
+	AllowHop bool `json:"allow_hop,omitempty"`
+	// HopListen are explicit IP:port addresses for that listener (port 0:
+	// any free port); empty means this computer's LAN and mesh addresses.
+	HopListen []string `json:"hop_listen,omitempty"`
 	// MeshPaths are mesh-VPN addresses (IP:port) a group host also listens
 	// on, so workers on the same mesh skip the relay. host sets them.
 	MeshPaths []string `json:"mesh_paths,omitempty"`
@@ -246,6 +254,15 @@ func (c Config) Validate() error {
 	}
 	if c.Public && !c.GroupHost {
 		return errors.New("public listening requires group_host")
+	}
+	if len(c.HopListen) > 8 {
+		return errors.New("at most 8 hop_listen addresses")
+	}
+	for _, p := range c.HopListen {
+		host, _, err := net.SplitHostPort(p)
+		if err != nil || net.ParseIP(host) == nil {
+			return fmt.Errorf("hop_listen: %q is not IP:port", p)
+		}
 	}
 	if len(c.MeshPaths) > 8 {
 		return errors.New("at most 8 mesh_paths")

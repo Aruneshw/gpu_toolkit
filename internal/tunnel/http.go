@@ -279,6 +279,12 @@ func ServeWorker(ctx context.Context, endpoint string, cfg *tls.Config, handler 
 // ServeWorkerNotify is ServeWorker with a callback invoked once the host has
 // accepted the reverse connection (before any request is served).
 func ServeWorkerNotify(ctx context.Context, endpoint string, cfg *tls.Config, handler http.Handler, accepted func(http.Header)) error {
+	return ServeWorkerWith(ctx, endpoint, cfg, nil, handler, accepted)
+}
+
+// ServeWorkerWith is ServeWorkerNotify that also sends header with the
+// reverse-connection request (for example which path the worker took).
+func ServeWorkerWith(ctx context.Context, endpoint string, cfg *tls.Config, header http.Header, handler http.Handler, accepted func(http.Header)) error {
 	u, err := url.Parse(endpoint)
 	if err != nil {
 		return err
@@ -301,6 +307,9 @@ func ServeWorkerNotify(ctx context.Context, endpoint string, cfg *tls.Config, ha
 	defer stop()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 	request := &http.Request{Method: http.MethodPost, URL: &url.URL{Scheme: "https", Host: u.Host, Path: "/v1/tunnel"}, Host: u.Host, Header: make(http.Header)}
+	for k, v := range header {
+		request.Header[http.CanonicalHeaderKey(k)] = append([]string{}, v...)
+	}
 	request.Header.Set("Connection", "Upgrade")
 	request.Header.Set("Upgrade", "meshcompute/1")
 	if err := request.Write(conn); err != nil {

@@ -58,7 +58,7 @@ func (a *Agent) acceptWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if _, err = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: meshcompute/1\r\n" + a.pathsHeader() + "\r\n"); err == nil {
+	if _, err = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: meshcompute/1\r\n" + a.pathsHeader() + a.hopsHeader(id) + "\r\n"); err == nil {
 		err = rw.Flush()
 	}
 	if err != nil {
@@ -68,6 +68,13 @@ func (a *Agent) acceptWorker(w http.ResponseWriter, r *http.Request) {
 	conn.SetDeadline(time.Time{})
 	local, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
 	a.links.setPath(id, classifyPath(local, tc.RemoteAddr(), a.c.Relay != ""), local)
+	// A worker that came through another worker's forwarder says which one;
+	// it is authenticated, and only a forwarding worker is accepted here.
+	via := r.Header.Get(HopHeader)
+	if via == id || !a.isHop(via) {
+		via = ""
+	}
+	a.links.setHop(id, via)
 	_, _ = a.broker.RegisterTLS(r.Context(), tc, a.verifyWorker)
 }
 
@@ -98,7 +105,7 @@ func allowedOperation(path, method string) bool {
 	switch path {
 	case "/v1/status", "/v1/ping", "/v1/probe":
 		return method == http.MethodGet
-	case "/v1/run", "/v1/run/stream":
+	case "/v1/run", "/v1/run/stream", probePath:
 		return method == http.MethodPost
 	}
 	return false
@@ -248,15 +255,19 @@ func (a *Agent) connectLoop(ctx context.Context, endpoint string, primary bool) 
 	for ctx.Err() == nil {
 		start := time.Now()
 		upgraded := false
-		ep, epCfg := endpoint, cfg
+		ep, epCfg, via := endpoint, cfg, ""
 		if a.hostPaths != nil {
-			ep, epCfg = a.hostPaths.current(cfg)
+			ep, epCfg, via = a.hostPaths.current(cfg)
 		}
-		err = tunnel.ServeWorkerNotify(ctx, ep, epCfg, handler, func(h http.Header) {
+		var hdr http.Header
+		if via != "" {
+			hdr = http.Header{HopHeader: {via}}
+		}
+		err = tunnel.ServeWorkerWith(ctx, ep, epCfg, hdr, handler, func(h http.Header) {
 			upgraded = true
 			announce()
 			if a.hostPaths != nil && primary {
-				a.hostPaths.offer(h.Get(PathsHeader))
+				a.hostPaths.offer(h.Get(PathsHeader), h.Get(HopsHeader))
 			}
 		})
 		if ctx.Err() != nil {

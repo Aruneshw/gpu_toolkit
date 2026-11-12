@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,7 +21,7 @@ import (
 const PathsHeader = "Meshcompute-Paths"
 
 const (
-	maxPaths     = 4
+	maxPaths     = 8
 	pathProbe    = time.Minute     // how often a worker re-checks its paths
 	pathDial     = 3 * time.Second // per connection attempt while probing
 	pathFailures = 2               // failed connections before leaving a path
@@ -79,16 +80,77 @@ func parsePaths(header string) []string {
 	return out
 }
 
+// HopsHeader lists, in the host's answer to a reverse connection, other
+// workers that forward connections to the host ("https://IP:port worker-ID",
+// comma-separated). HopHeader in a worker's request names the worker whose
+// forwarder it came through.
+const (
+	HopsHeader = "Meshcompute-Hops"
+	HopHeader  = "Meshcompute-Hop"
+	maxHops    = 6
+)
+
+// hop is another worker's forwarder to the host.
+type hop struct {
+	endpoint, via string
+}
+
+// parseHops keeps the well-formed "https://IP:port worker-ID" entries.
+func parseHops(header string) []hop {
+	var out []hop
+	for _, entry := range strings.Split(header, ",") {
+		fields := strings.Fields(entry)
+		if len(fields) != 2 || !validWorkerID(fields[1]) {
+			continue
+		}
+		if p := parsePaths(fields[0]); len(p) == 1 {
+			out = append(out, hop{p[0], fields[1]})
+		}
+		if len(out) == maxHops {
+			break
+		}
+	}
+	return out
+}
+
+func validWorkerID(id string) bool {
+	if len(id) != 71 || !strings.HasPrefix(id, "worker-") {
+		return false
+	}
+	for _, c := range id[7:] {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// pathFilter lets tests hide some offered paths from one worker (nil: keep
+// every path).
+var pathFilter atomic.Pointer[func(dir, endpoint string) bool]
+
+func keepPath(dir, endpoint string) bool {
+	if f := pathFilter.Load(); f != nil {
+		return (*f)(dir, endpoint)
+	}
+	return true
+}
+
 // hostPaths chooses which address of the group host a worker connects to:
-// the invitation's (often the public relay) or a faster mesh address the
-// host offered. The host's identity is checked the same way on every path
-// (pinned certificate; the TLS server name stays the invitation's host).
+// the invitation's (often the public relay), a faster mesh address the host
+// offered, or another worker's forwarder (a hop). The host's identity is
+// checked the same way on every path (pinned certificate; the TLS server
+// name stays the invitation's host), so a forwarding worker only ever sees
+// encrypted bytes.
 type hostPaths struct {
 	primary string
 	dir     string
 	mu      sync.Mutex
 	offered []string
+	hops    []hop
 	chosen  string // "" means primary
+	via     string // the forwarding worker when chosen is a hop
+	direct  string // best path that is not a hop ("" means primary)
 	fails   int
 	bad     map[string]time.Time
 	kick    chan struct{}
@@ -99,22 +161,35 @@ func newHostPaths(dir, primary string, note func(string)) *hostPaths {
 	return &hostPaths{primary: primary, dir: dir, bad: map[string]time.Time{}, kick: make(chan struct{}, 1), note: note}
 }
 
-// current returns the endpoint to connect to and its TLS settings.
-func (h *hostPaths) current(base *tls.Config) (string, *tls.Config) {
+// current returns the endpoint to connect to, its TLS settings, and the
+// forwarding worker when it is a hop.
+func (h *hostPaths) current(base *tls.Config) (string, *tls.Config, string) {
 	h.mu.Lock()
-	chosen := h.chosen
+	chosen, via := h.chosen, h.via
 	h.mu.Unlock()
 	if chosen == "" {
-		return h.primary, base
+		return h.primary, base, ""
 	}
-	return chosen, h.config(base)
+	return chosen, h.config(base), via
+}
+
+// directEndpoint is where this worker's own forwarder sends other workers'
+// connections: its best path that is not itself a hop, so a connection
+// never passes through more than one worker.
+func (h *hostPaths) directEndpoint() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.direct != "" {
+		return h.direct
+	}
+	return h.primary
 }
 
 // config is base with the invitation's host as TLS server name, so the
 // host certificate verifies on another address.
 func (h *hostPaths) config(base *tls.Config) *tls.Config {
 	u, err := url.Parse(h.primary)
-	if err != nil {
+	if err != nil || base == nil {
 		return base
 	}
 	c := base.Clone()
@@ -122,14 +197,22 @@ func (h *hostPaths) config(base *tls.Config) *tls.Config {
 	return c
 }
 
-// offer records the paths the host just listed; new ones are probed soon.
-func (h *hostPaths) offer(header string) {
-	paths := parsePaths(header)
+// offer records the paths and hops the host just listed; new ones are
+// probed soon.
+func (h *hostPaths) offer(pathsHeader, hopsHeader string) {
+	paths, hops := parsePaths(pathsHeader), parseHops(hopsHeader)
+	key := func(p []string, hs []hop) string {
+		k := strings.Join(p, ",")
+		for _, x := range hs {
+			k += "|" + x.endpoint + " " + x.via
+		}
+		return k
+	}
 	h.mu.Lock()
-	changed := strings.Join(paths, ",") != strings.Join(h.offered, ",")
-	h.offered = paths
+	changed := key(paths, hops) != key(h.offered, h.hops)
+	h.offered, h.hops = paths, hops
 	h.mu.Unlock()
-	if changed && len(paths) > 0 {
+	if changed && (len(paths) > 0 || len(hops) > 0) {
 		select {
 		case h.kick <- struct{}{}:
 		default:
@@ -138,7 +221,7 @@ func (h *hostPaths) offer(header string) {
 }
 
 // result records how a connection on endpoint went; repeated failures on a
-// mesh path fall back to the invitation's address.
+// mesh path or hop fall back to the best direct path, then the invitation's.
 func (h *hostPaths) result(endpoint string, ok bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -150,11 +233,24 @@ func (h *hostPaths) result(endpoint string, ok bool) {
 		return
 	}
 	h.fails++
-	if h.fails >= pathFailures {
-		h.bad[h.chosen] = time.Now().Add(pathBadFor)
-		h.note(fmt.Sprintf("The direct path %s stopped working; using %s again.", hostOf(h.chosen), hostOf(h.primary)))
-		h.chosen, h.fails = "", 0
+	if h.fails < pathFailures {
+		return
 	}
+	h.bad[h.chosen] = time.Now().Add(pathBadFor)
+	next := h.direct
+	if next == h.chosen {
+		next, h.direct = "", ""
+	}
+	what := "direct path " + hostOf(h.chosen)
+	if h.via != "" {
+		what = "path through worker " + short(h.via)
+	}
+	back := hostOf(h.primary)
+	if next != "" {
+		back = hostOf(next)
+	}
+	h.note(fmt.Sprintf("The %s stopped working; using %s again.", what, back))
+	h.chosen, h.via, h.fails = next, "", 0
 }
 
 // run re-checks the paths every pathProbe, and soon after the host offers
@@ -174,56 +270,96 @@ func (h *hostPaths) run(ctx context.Context) {
 	}
 }
 
-// probe times a TLS connection to every path and picks the fastest one
-// that works. A mesh path wins unless the invitation's address is clearly
-// faster: it skips the relay's detour and the relay's capacity limits.
+// probe times a TLS connection over every path and picks one. Among direct
+// paths a mesh path wins unless the invitation's address is clearly faster
+// (it skips the relay's detour and capacity limits); a hop through another
+// worker wins only when it is clearly faster than every direct path, or
+// when none works.
 func (h *hostPaths) probe(ctx context.Context) {
 	base, err := security.WorkerTLS(h.dir)
 	if err != nil {
 		return
 	}
 	h.mu.Lock()
-	offered := append([]string{}, h.offered...)
 	for p, until := range h.bad {
 		if time.Now().After(until) {
 			delete(h.bad, p)
 		}
 	}
-	var candidates []string
-	for _, p := range offered {
-		if _, bad := h.bad[p]; !bad && p != h.primary {
-			candidates = append(candidates, p)
+	usable := func(p string) bool {
+		_, bad := h.bad[p]
+		return !bad && p != h.primary && keepPath(h.dir, p)
+	}
+	var mesh []string
+	for _, p := range h.offered {
+		if usable(p) {
+			mesh = append(mesh, p)
 		}
 	}
-	previous := h.chosen
+	var hops []hop
+	for _, x := range h.hops {
+		if usable(x.endpoint) {
+			hops = append(hops, x)
+		}
+	}
+	previous, previousVia := h.chosen, h.via
 	h.mu.Unlock()
-	if len(candidates) == 0 {
+	if len(mesh) == 0 && len(hops) == 0 {
+		h.mu.Lock()
+		if h.chosen != "" {
+			h.chosen, h.via, h.direct = "", "", ""
+		}
+		h.mu.Unlock()
 		return
 	}
 	primaryTime, primaryOK := timeTLS(ctx, h.primary, base)
-	best, bestTime := "", time.Duration(0)
-	for _, p := range candidates {
-		if d, ok := timeTLS(ctx, p, h.config(base)); ok && (best == "" || d < bestTime) {
-			best, bestTime = p, d
+	bestMesh, meshTime := "", time.Duration(0)
+	for _, p := range mesh {
+		if d, ok := timeTLS(ctx, p, h.config(base)); ok && (bestMesh == "" || d < meshTime) {
+			bestMesh, meshTime = p, d
 		}
 	}
-	choice := ""
-	if best != "" && (!primaryOK || bestTime <= primaryTime*6/5+2*time.Millisecond) {
-		choice = best
+	direct, directTime, directOK := "", primaryTime, primaryOK
+	if bestMesh != "" && (!primaryOK || meshTime <= primaryTime*6/5+2*time.Millisecond) {
+		direct, directTime, directOK = bestMesh, meshTime, true
+	}
+	var bestHop hop
+	hopTime := time.Duration(0)
+	for _, x := range hops {
+		if d, ok := timeTLS(ctx, x.endpoint, h.config(base)); ok && (bestHop.endpoint == "" || d < hopTime) {
+			bestHop, hopTime = x, d
+		}
+	}
+	choice, via := direct, ""
+	if bestHop.endpoint != "" && (!directOK || hopClearlyFaster(hopTime, directTime)) {
+		choice, via = bestHop.endpoint, bestHop.via
 	}
 	h.mu.Lock()
-	h.chosen = choice
+	h.chosen, h.via, h.direct = choice, via, direct
 	if choice != previous {
 		h.fails = 0
 	}
 	h.mu.Unlock()
-	if choice != previous {
-		if choice != "" {
-			h.note(fmt.Sprintf("Using the direct path %s to the group host (%s per connection instead of %s through %s).", hostOf(choice), roundMs(bestTime), roundMs(primaryTime), hostOf(h.primary)))
-		} else {
-			h.note(fmt.Sprintf("Using %s to reach the group host.", hostOf(h.primary)))
-		}
+	if choice == previous && via == previousVia {
+		return
 	}
+	switch {
+	case via != "":
+		h.note(fmt.Sprintf("Reaching the group host through worker %s (%s per connection instead of %s directly).", short(via), roundMs(hopTime), roundMs(directTime)))
+	case choice != "":
+		h.note(fmt.Sprintf("Using the direct path %s to the group host (%s per connection instead of %s through %s).", hostOf(choice), roundMs(meshTime), roundMs(primaryTime), hostOf(h.primary)))
+	default:
+		h.note(fmt.Sprintf("Using %s to reach the group host.", hostOf(h.primary)))
+	}
+}
+
+// hopClearlyFaster decides whether a path through another worker is worth
+// it: at least twice as fast and 10 ms faster than the best direct path.
+// A hop adds a computer that can go away, and on a busy machine handshake
+// times jitter by milliseconds, so small gains are noise; the case it is
+// for is a relay at tens or hundreds of ms against a LAN or mesh path.
+func hopClearlyFaster(hop, direct time.Duration) bool {
+	return hop*2 <= direct && direct-hop >= 10*time.Millisecond
 }
 
 // timeTLS is the fastest of three pinned TLS handshakes to endpoint.

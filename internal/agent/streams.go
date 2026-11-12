@@ -95,6 +95,7 @@ func (a *Agent) connectWorker(ctx context.Context, endpoint string) {
 		fmt.Fprintf(a.log.Writer(), "%s  %s\n", time.Now().Format("15:04:05"), msg)
 	})
 	go a.hostPaths.run(ctx)
+	a.startHop(ctx)
 	var loops sync.WaitGroup
 	for i := 0; i < workerConnections; i++ {
 		loops.Add(1)

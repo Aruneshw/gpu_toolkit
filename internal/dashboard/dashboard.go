@@ -542,6 +542,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/run", s.handleRun)
 	s.toolRoutes(mux)
 	s.fleetRoutes(mux)
+	s.topologyRoutes(mux)
 	s.modelRoutes(mux)
 	return mux
 }

@@ -177,6 +177,20 @@ try {
   })()`, 8000);
   await shot("host-full.png");
 
+  // ---- network map ----
+  await waitFor("network map panel visible", "!document.getElementById('topoPanel').hidden");
+  await waitFor("the map draws every worker", `document.querySelectorAll('#topoMap [data-node]').length === ${N}`, 15000);
+  const hops = Number(process.env.HOPS || 0);
+  if (hops >= 2) {
+    const cells = await waitFor("workers that allow hops measured each other", `(() => {
+      const cells = Array.from(document.querySelectorAll('#topoMatrix [data-cell]')).map(c => c.textContent);
+      return cells.length === ${hops * (hops - 1)} && cells.every(c => / ms$/.test(c)) && cells;
+    })()`, 90000);
+    check(Array.isArray(cells), "the matrix holds a time for every pair", cells);
+    check(await evaluate("document.querySelectorAll('#topoMap .tw-dot.hopper').length") === hops, "forwarding workers are marked on the map");
+  }
+  await shot("host-map.png");
+
   // ---- models & pools (only with real llama.cpp) ----
   if (process.env.POOL_MODEL) {
     const modelDir = process.env.POOL_MODEL.replace(/[\\/][^\\/]*$/, "");

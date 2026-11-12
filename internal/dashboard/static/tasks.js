@@ -257,6 +257,7 @@
       if (!settingsBusy) {
         $("setTerminal").checked = !!body.settings.allow_terminal;
         $("setShare").checked = !!body.settings.share_gpu;
+        $("setHop").checked = !!body.settings.allow_hop;
         $("setTasks").value = body.settings.task_approval;
       }
       $("closeShells").textContent = "Close the host's terminals (" + body.terminals + " open)";
@@ -267,7 +268,7 @@
     settingsBusy = true;
     $("workerMsg").textContent = "saving…";
     try {
-      var res = await post("/api/worker", { allow_terminal: $("setTerminal").checked, share_gpu: $("setShare").checked, task_approval: $("setTasks").value });
+      var res = await post("/api/worker", { allow_terminal: $("setTerminal").checked, share_gpu: $("setShare").checked, allow_hop: $("setHop").checked, task_approval: $("setTasks").value });
       $("workerMsg").textContent = res.ok ? "saved" : "failed: " + await errorOf(res);
     } finally {
       settingsBusy = false;
@@ -303,7 +304,7 @@
         if (scope.textContent !== want) scope.textContent = want;
       }).observe($("scope"), { childList: true, characterData: true, subtree: true });
       $("scope").textContent = "";
-      ["setTerminal", "setShare", "setTasks"].forEach(function (id) { $(id).addEventListener("change", saveWorker); });
+      ["setTerminal", "setShare", "setHop", "setTasks"].forEach(function (id) { $(id).addEventListener("change", saveWorker); });
       $("closeShells").addEventListener("click", async function () { await post("/api/worker/terminals/close", {}); loadWorker(); });
       loadWorker();
       setInterval(loadWorker, 3000);

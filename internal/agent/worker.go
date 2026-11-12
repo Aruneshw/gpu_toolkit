@@ -26,6 +26,9 @@ type WorkerSettings struct {
 	// ShareGPU reports whether this computer lends its GPU (changing it
 	// takes effect on the next reconnect).
 	ShareGPU bool `json:"share_gpu"`
+	// AllowHop lets other workers reach the host through this computer
+	// (takes effect when the worker restarts).
+	AllowHop bool `json:"allow_hop"`
 }
 
 // HostLink is this worker's connection to its group host.
@@ -95,7 +98,7 @@ func (a *Agent) setLink(endpoint string, connected bool) {
 func (a *Agent) Settings() WorkerSettings {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return WorkerSettings{AllowTerminal: a.c.AllowTerminal, TaskApproval: taskPolicy(a.c.TaskApproval), ShareGPU: a.c.ShareGPU != "off"}
+	return WorkerSettings{AllowTerminal: a.c.AllowTerminal, TaskApproval: taskPolicy(a.c.TaskApproval), ShareGPU: a.c.ShareGPU != "off", AllowHop: a.c.AllowHop}
 }
 
 // UpdateSettings applies and saves the owner's choices. Turning the terminal
@@ -108,7 +111,7 @@ func (a *Agent) UpdateSettings(s WorkerSettings) (WorkerSettings, error) {
 		return a.Settings(), errors.New("task approval must be ask, auto or off")
 	}
 	c, err := config.Update(a.dir, func(c *config.Config) error {
-		c.AllowTerminal, c.TaskApproval = s.AllowTerminal, s.TaskApproval
+		c.AllowTerminal, c.TaskApproval, c.AllowHop = s.AllowTerminal, s.TaskApproval, s.AllowHop
 		if s.ShareGPU {
 			c.ShareGPU = ""
 		} else {
@@ -120,9 +123,9 @@ func (a *Agent) UpdateSettings(s WorkerSettings) (WorkerSettings, error) {
 		return a.Settings(), err
 	}
 	a.mu.Lock()
-	a.c.AllowTerminal, a.c.TaskApproval, a.c.ShareGPU = c.AllowTerminal, c.TaskApproval, c.ShareGPU
+	a.c.AllowTerminal, a.c.TaskApproval, a.c.ShareGPU, a.c.AllowHop = c.AllowTerminal, c.TaskApproval, c.ShareGPU, c.AllowHop
 	a.mu.Unlock()
-	a.log.Printf("event=worker_settings terminal=%t tasks=%s share_gpu=%t", s.AllowTerminal, s.TaskApproval, s.ShareGPU)
+	a.log.Printf("event=worker_settings terminal=%t tasks=%s share_gpu=%t allow_hop=%t", s.AllowTerminal, s.TaskApproval, s.ShareGPU, s.AllowHop)
 	return a.Settings(), nil
 }
 

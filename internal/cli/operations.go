@@ -283,6 +283,11 @@ func operational(ctx context.Context, dir string, c config.Config, command strin
 		return writeJSON(out, map[string]any{"mesh": found, "guidance": guidance})
 	case "pool":
 		return poolCommand(ctx, dir, c, args, out)
+	case "topology":
+		if len(args) > 1 || len(args) == 1 && args[0] != "--json" {
+			return errors.New("usage: topology [--json]")
+		}
+		return topologyCommand(ctx, dir, c, len(args) == 1, out)
 	case "simulate":
 		if len(args) != 0 {
 			return errors.New("simulate takes no arguments")
@@ -571,4 +576,73 @@ func simulation(out io.Writer) error {
 	w.Available = false
 	failed := scheduler.Recommend([]scheduler.Worker{w}, m, p)
 	return writeJSON(out, map[string]any{"simulation": true, "inference_performed": false, "slow_network": slow, "disconnected_worker": failed})
+}
+
+// topologyCommand prints the group host's latency map.
+func topologyCommand(ctx context.Context, dir string, c config.Config, asJSON bool, out io.Writer) error {
+	if !c.GroupHost {
+		return errors.New("the latency map is kept by the group host; run this there")
+	}
+	cl, e := security.Client(dir)
+	if e != nil {
+		return e
+	}
+	defer cl.CloseIdleConnections()
+	bounded, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	var t agent.Topology
+	if e := request(bounded, cl, c.LocalEndpoint(), "/v1/topology", nil, &t); e != nil {
+		return fmt.Errorf("the group host is not running, or refused: %w", e)
+	}
+	if asJSON {
+		return writeJSON(out, t)
+	}
+	return printTopology(out, t)
+}
+
+func printTopology(out io.Writer, t agent.Topology) error {
+	ms := func(v *float64) string {
+		if v == nil {
+			return "—"
+		}
+		if *v < 10 {
+			return fmt.Sprintf("%.1f ms", *v)
+		}
+		return fmt.Sprintf("%.0f ms", *v)
+	}
+	short := func(id string) string {
+		if len(id) > 15 {
+			return id[:15]
+		}
+		return id
+	}
+	if len(t.Nodes) == 0 {
+		_, e := fmt.Fprintln(out, "No worker is connected.")
+		return e
+	}
+	fmt.Fprintln(out, "Workers and their link to this host:")
+	for _, n := range t.Nodes {
+		path := n.Path
+		if n.Path == "hop" && n.HopVia != "" {
+			path = "through " + short(n.HopVia)
+		}
+		hop := "no (owner has not allowed hops)"
+		if n.Hop != nil {
+			hop = fmt.Sprintf("yes, %d connection(s) now, %d so far", n.Hop.Active, n.Hop.Served)
+		}
+		fmt.Fprintf(out, "  %-15s  %-22s  %-9s  forwards for others: %s\n", short(n.ID), path, ms(n.RTTMillis), hop)
+	}
+	if len(t.Pairs) == 0 {
+		_, e := fmt.Fprintln(out, "Worker-to-worker times appear once two workers allow hops (join --allow-hop).")
+		return e
+	}
+	fmt.Fprintf(out, "Worker to worker (TCP connection time to the other's forwarder, measured %s):\n", t.MeasuredAt.Local().Format("15:04:05"))
+	for _, p := range t.Pairs {
+		v := ms(p.Millis)
+		if p.Millis == nil {
+			v = "unreachable"
+		}
+		fmt.Fprintf(out, "  %-15s -> %-15s  %s\n", short(p.From), short(p.To), v)
+	}
+	return nil
 }

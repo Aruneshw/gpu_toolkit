@@ -36,6 +36,8 @@ type LinkStatus struct {
 	Path string `json:"path,omitempty"`
 	// Via is the host address the worker's latest connection arrived at.
 	Via string `json:"via,omitempty"`
+	// HopVia is the worker it came through when Path is "hop".
+	HopVia string `json:"hop_via,omitempty"`
 	// RTTMillis is the median of the recent round trips through the tunnel
 	// (the path the pool's RPC traffic takes), LastMillis the latest one.
 	RTTMillis  *float64 `json:"rtt_ms,omitempty"`
@@ -107,6 +109,21 @@ func (l *links) setPath(id, path string, via net.Addr) {
 		k.status.Via = via.String()
 	}
 	l.mu.Unlock()
+}
+
+// setHop marks a worker's latest connection as coming through worker via
+// (Path "hop"), or clears that when via is "".
+func (l *links) setHop(id, via string) {
+	if l == nil {
+		return
+	}
+	k := l.get(id)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	k.status.HopVia = via
+	if via != "" {
+		k.status.Path = "hop"
+	}
 }
 
 // Status returns every known worker's link.

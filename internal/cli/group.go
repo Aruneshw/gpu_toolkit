@@ -425,7 +425,7 @@ func readInvitation(r *bufio.Reader) (string, error) {
 // new enrollment succeeds and is kept as a backup file.
 func joinGroup(ctx context.Context, dir string, c config.Config, args []string, in io.Reader, out io.Writer) error {
 	code, stdin, noStart, open := "", false, false, true
-	const joinUsage = "usage: join [CODE|--stdin] [--no-start] [--no-open] [--allow-terminal|--no-terminal] [--tasks ask|auto|off] [--no-share-gpu]"
+	const joinUsage = "usage: join [CODE|--stdin] [--no-start] [--no-open] [--allow-terminal|--no-terminal] [--allow-hop|--no-hop] [--tasks ask|auto|off] [--no-share-gpu]"
 	changed := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -450,6 +450,10 @@ func joinGroup(ctx context.Context, dir string, c config.Config, args []string, 
 			c.AllowTerminal, changed = true, true
 		case a == "--no-terminal":
 			c.AllowTerminal, changed = false, true
+		case a == "--allow-hop":
+			c.AllowHop, changed = true, true
+		case a == "--no-hop":
+			c.AllowHop, changed = false, true
 		case a == "--no-share-gpu":
 			c.ShareGPU, changed = "off", true
 		case a == "--share-gpu":

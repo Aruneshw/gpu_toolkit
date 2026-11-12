@@ -456,3 +456,30 @@ GPUs.
 
 Not run: a real mesh VPN between two computers (the switching logic is tested
 with a second loopback address), and pools on physical GPUs.
+
+## 2026-11-12: network map and hops (phase 5)
+
+- Go end-to-end test with real agents: the invitation address goes through a
+  proxy that delays every chunk by 15 ms (a far relay); worker B also has a
+  fast path and allows hops on 127.0.0.3; worker A cannot use the fast path.
+  A moves to the hop through B, the host labels A's link "hop via B", both
+  workers are measured towards each other, a worker certificate gets 403 on
+  /v1/topology, and when B stops A returns to its own path. Without hop
+  support the test times out. Passes 5 times in a row under the race
+  detector, as does the mesh-path test (now also with a slow invitation path).
+- Unit tests: the probe endpoint refuses without allow_hop, rejects bad or too
+  many targets, times a listening and a closed port correctly and refuses a
+  second run within 5 s; a forwarder sends through its direct path, never a
+  hop; hop choice needs 2x and 10 ms; virtual bridges (Docker, libvirt, WSL,
+  VirtualBox, VMware) are not offered.
+- Browser (`scripts/ui-test.sh`, 5 workers, 2 allowing hops on this laptop's
+  real LAN address): the map draws every worker, both pairs get a time, the
+  forwarding workers are marked, and `meshcompute topology` lists both. The
+  first browser run showed two workers on the same computer hopping (timing
+  noise under load passed the earlier 25% + 2 ms rule) and a Docker bridge
+  address offered as a forwarder; both fixed (2x and 10 ms rule, bridges
+  skipped) and the rerun showed no hop.
+- The map's drawing was checked with screenshots, including mock data with a
+  hop, a relay link and an unreachable pair.
+
+Not run: hops between separate physical computers on a real LAN or mesh.
