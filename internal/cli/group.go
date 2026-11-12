@@ -176,7 +176,7 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 		} else {
 			public = false
 		}
-		relayServer, meshName = "", m.label()
+		relayServer, meshName = "", meshLabel(m)
 		fmt.Fprintf(out, "Mesh: hosting on %s (%s). Computers on the same VPN connect directly.\n", m.IP, meshName)
 	}
 	explicitListen := listen != c.Listen
@@ -283,6 +283,7 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 	if session != nil {
 		next.Relay, next.RelayPort = relayServer, session.Port
 	}
+	next.MeshPaths = meshPaths(listen, meshName)
 	if err := next.Validate(); err != nil {
 		return err
 	}
@@ -358,6 +359,9 @@ func hostGroup(ctx context.Context, dir string, c config.Config, args []string, 
 	} else if ip != nil && ip.To4() == nil && ip.IsGlobalUnicast() {
 		_, port, _ := net.SplitHostPort(listen)
 		fmt.Fprintf(output, "Reachability: %s is a global IPv6 address. No port forwarding is needed; allow TCP %s through the firewall if one is enabled.\n", hostIP, port)
+	}
+	if len(next.MeshPaths) > 0 {
+		fmt.Fprintf(output, "Mesh path: friends on the same mesh VPN also reach this computer at %s and use it instead of the slower relay or public address (MESHCOMPUTE_MESH_PATHS=off turns this off).\n", strings.Join(next.MeshPaths, ", "))
 	}
 	fmt.Fprintf(output, "Keep this process running (Ctrl-C stops it); the friend only needs the invitation above.\n")
 	if open {
@@ -638,4 +642,28 @@ func sameIPs(oldListen, oldAdvertise, listen, advertise string) bool {
 		return hostOf(endpoint)
 	}
 	return hostOf(oldListen) == hostOf(listen) && host(oldAdvertise) == host(advertise)
+}
+
+// meshPaths are this computer's mesh-VPN addresses, on the group's port,
+// that a host reached through a relay or a public address also listens on:
+// workers on the same mesh then connect there directly. A host already on
+// the mesh needs none.
+func meshPaths(listen, meshName string) []string {
+	if meshName != "" || strings.EqualFold(os.Getenv("MESHCOMPUTE_MESH_PATHS"), "off") {
+		return nil
+	}
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, m := range meshAddresses() {
+		if ip := net.ParseIP(m.IP); ip != nil && !ip.IsLinkLocalUnicast() {
+			out = append(out, net.JoinHostPort(m.IP, port))
+		}
+		if len(out) == 4 {
+			break
+		}
+	}
+	return out
 }

@@ -149,6 +149,9 @@ func TestSeveralPoolsEndToEnd(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		var result agent.Result
 		if code := getJSON(t, client, local+"/v1/run", req, &result); code != 200 || result.Mode != "pooled" {
+			for _, p := range pools().Pools {
+				t.Logf("pool %s %s %q log:\n%s", p.Name, p.State, p.Detail, strings.Join(p.Log, "\n"))
+			}
 			t.Fatalf("request %d: HTTP %d %+v", i, code, result)
 		}
 		seen[result.Content]++

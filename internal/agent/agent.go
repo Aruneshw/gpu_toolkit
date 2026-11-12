@@ -50,6 +50,8 @@ type Status struct {
 	Pools []PoolStatus `json:"pools,omitempty"`
 	// Sharing lists the workers able to lend a GPU (group host only).
 	Sharing []string `json:"sharing,omitempty"`
+	// Links is the host's measured link to each connected worker.
+	Links map[string]LinkStatus `json:"links,omitempty"`
 }
 type Result struct {
 	backend.Response
@@ -70,6 +72,9 @@ type Agent struct {
 	known       map[string]*x509.Certificate
 	workerCache map[string]Status
 	pools       *poolSet
+	links       *links
+	meshPaths   []string   // https endpoints workers may use instead of the relay
+	hostPaths   *hostPaths // worker: which address of the group host to use
 	// cfgMu serializes read-modify-write of the saved configuration.
 	cfgMu     sync.Mutex
 	resources resourceCache
@@ -91,6 +96,7 @@ func New(dir string, c config.Config, audit io.Writer) *Agent {
 		a.known = make(map[string]*x509.Certificate)
 		a.workerCache = make(map[string]Status)
 		a.pools = newPools(a)
+		a.links = newLinks(a)
 	}
 	return a
 }
@@ -158,6 +164,7 @@ func (a *Agent) Status(ctx context.Context) (Status, error) {
 	if a.pools != nil {
 		all := a.pools.Status()
 		st.Pools, st.Sharing = all.Pools, all.Sharing
+		st.Links = a.links.Status()
 		st.Pool = a.pools.First()
 		pooled = a.pools.models()
 	}
@@ -281,6 +288,10 @@ func (a *Agent) Generate(ctx context.Context, r backend.Request) (result Result,
 	completed := false
 	defer func() {
 		if !completed {
+			if err != nil {
+				// This computer's own log keeps the cause; callers get Reason.
+				a.log.Printf("event=inference_error error=%q", err.Error())
+			}
 			a.finish(t, "failed", 0)
 		}
 	}()
@@ -319,6 +330,9 @@ func (a *Agent) GenerateStream(ctx context.Context, r backend.Request, emit func
 	rate := 0.0
 	defer func() {
 		if !completed {
+			if err != nil {
+				a.log.Printf("event=inference_error error=%q", err.Error())
+			}
 			a.finish(t, "failed", 0)
 		}
 	}()
@@ -514,6 +528,8 @@ func (a *Agent) ServeListener(ctx context.Context, listener net.Listener) error 
 		listener = tunnel.LimitListener(listener, 1024)
 		workers.Add(1)
 		go func() { defer workers.Done(); a.pools.run(ctx) }()
+		workers.Add(1)
+		go func() { defer workers.Done(); a.links.run(ctx) }()
 	}
 	server := &http.Server{Addr: a.c.Listen, Handler: a.Handler(), TLSConfig: tlsConfig, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: backend.Timeout + 10*time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384, ErrorLog: log.New(io.Discard, "", 0)}
 	done := make(chan struct{})
@@ -527,6 +543,9 @@ func (a *Agent) ServeListener(ctx context.Context, listener net.Listener) error 
 	}()
 	a.log.Print("event=agent_start transport=mutual_tls")
 	go a.resources.get(ctx, a.dir) // warm up: GPU discovery can be slow
+	if a.broker != nil {
+		a.serveMeshPaths(ctx, server, &workers)
+	}
 	e = server.ServeTLS(listener, "", "")
 	if errors.Is(e, http.ErrServerClosed) {
 		return nil

@@ -37,6 +37,9 @@ type Config struct {
 	// Mesh names the VPN interface (Tailscale, WireGuard, ...) a group host
 	// listens on; informational.
 	Mesh string `json:"mesh,omitempty"`
+	// MeshPaths are mesh-VPN addresses (IP:port) a group host also listens
+	// on, so workers on the same mesh skip the relay. host sets them.
+	MeshPaths []string `json:"mesh_paths,omitempty"`
 	// AllowTerminal lets the group host open a shell on this worker. It is an
 	// explicit choice of the worker's owner and is off by default.
 	AllowTerminal bool `json:"allow_terminal,omitempty"`
@@ -91,6 +94,12 @@ type PoolConfig struct {
 	KVOnHost bool `json:"kv_on_host,omitempty"`
 	// FlashAttn is auto (default), on or off.
 	FlashAttn string `json:"flash_attn,omitempty"`
+	// OutputLayer is where the output layer (the logits) runs: "host" keeps
+	// it on the host (its GPU, else its CPU) so each token sends the host a
+	// few KB instead of the whole vocabulary's logits; "worker" leaves
+	// llama.cpp's choice (the last device); "" (auto) means host when the
+	// host lends its own GPU to the pool, else worker.
+	OutputLayer string `json:"output_layer,omitempty"`
 }
 
 var poolName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
@@ -154,6 +163,11 @@ func (p PoolConfig) Validate() error {
 	case "", "auto", "on", "off":
 	default:
 		return errors.New("flash_attn must be auto, on or off")
+	}
+	switch p.OutputLayer {
+	case "", "auto", "host", "worker":
+	default:
+		return errors.New("output_layer must be auto, host or worker")
 	}
 	return nil
 }
@@ -232,6 +246,15 @@ func (c Config) Validate() error {
 	}
 	if c.Public && !c.GroupHost {
 		return errors.New("public listening requires group_host")
+	}
+	if len(c.MeshPaths) > 8 {
+		return errors.New("at most 8 mesh_paths")
+	}
+	for _, p := range c.MeshPaths {
+		host, port, err := net.SplitHostPort(p)
+		if err != nil || net.ParseIP(host) == nil || port == "" || port == "0" {
+			return fmt.Errorf("mesh_paths: %q is not IP:port", p)
+		}
 	}
 	if e := RemoteEndpoint("https://"+c.Listen, c.Public); e != nil {
 		return fmt.Errorf("listen: %w", e)

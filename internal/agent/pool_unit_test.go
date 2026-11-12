@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"context"
 	"meshcompute/internal/backend"
 	"meshcompute/internal/config"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAssignWorkersToPools(t *testing.T) {
@@ -194,5 +196,35 @@ func TestCanServeNamedPool(t *testing.T) {
 		if why := CanServe(st, &tc.r, true); !strings.Contains(why, tc.want) {
 			t.Fatalf("%+v: %q, want %q", tc.r, why, tc.want)
 		}
+	}
+}
+
+// While a pool reloads (new settings or workers), no request may reserve a
+// slot on the llama-server being stopped.
+func TestReloadTakesPoolOutOfRotationFirst(t *testing.T) {
+	s := &poolSet{rr: map[string]int{}, kick: make(chan struct{}, 1)}
+	p := s.newPool(config.PoolConfig{Name: "a", Model: "m", Enabled: true, Parallel: 2})
+	s.pools = []*pool{p}
+	done := make(chan struct{})
+	routedDuringStop := false
+	proc := &poolProcess{cfg: p.cfg, workers: []string{"worker-old"}, endpoint: "http://127.0.0.1:1/a", done: done, alloc: &backend.Allocation{}}
+	proc.cancel = func() { close(done) }
+	defer func(f func()) { beforeReloadStop = f }(beforeReloadStop)
+	beforeReloadStop = func() {
+		// The reload is decided and llama-server is about to stop: a request
+		// arriving now must not get a slot on it.
+		if _, _, release, ok, err := s.route("m", 512, ""); ok && err == nil {
+			routedDuringStop = true
+			release()
+		}
+	}
+	p.proc, p.state = proc, "ready"
+	p.retryAt = time.Now().Add(time.Hour) // do not start a real llama-server afterwards
+	p.reconcile(context.Background(), []string{"worker-new"})
+	if routedDuringStop {
+		t.Fatal("a request was routed to the llama-server being stopped")
+	}
+	if st := p.Status(); st.State == "ready" {
+		t.Fatalf("pool still offered while reloading: %+v", st)
 	}
 }

@@ -208,6 +208,10 @@ func getJSON(t *testing.T, cl *http.Client, url string, body, out any) int {
 		if err := json.NewDecoder(r.Body).Decode(out); err != nil {
 			t.Fatalf("%s: %v", url, err)
 		}
+	} else if r.StatusCode != http.StatusOK {
+		// Say why, for failures seen only on CI machines.
+		why, _ := io.ReadAll(io.LimitReader(r.Body, 512))
+		t.Logf("%s: HTTP %d: %s", url, r.StatusCode, bytes.TrimSpace(why))
 	}
 	return r.StatusCode
 }

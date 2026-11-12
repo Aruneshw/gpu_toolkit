@@ -3,8 +3,10 @@ package resource
 import (
 	"context"
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseMeminfo(t *testing.T) {
@@ -97,5 +99,23 @@ func TestCPULoad(t *testing.T) {
 	}
 	if cpuLoad("intr 1 2 3") != nil || cpuLoad("cpu 1 x 3 4 5") != nil {
 		t.Fatal("parsed garbage")
+	}
+}
+
+// Basic is the instant stand-in while GPU discovery runs: it must not start
+// any program (PowerShell takes seconds on Windows).
+func TestBasicIsInstant(t *testing.T) {
+	start := time.Now()
+	s := Basic(context.Background(), t.TempDir())
+	if d := time.Since(start); d > 500*time.Millisecond {
+		t.Fatalf("Basic took %s", d)
+	}
+	if runtime.GOOS == "linux" || runtime.GOOS == "windows" {
+		if s.RAMTotalBytes == nil || s.RAMAvailableBytes == nil || *s.RAMAvailableBytes > *s.RAMTotalBytes || *s.RAMTotalBytes == 0 {
+			t.Fatalf("memory: %+v", s)
+		}
+		if s.DiskTotalBytes == nil || s.DiskFreeBytes == nil || *s.DiskFreeBytes > *s.DiskTotalBytes {
+			t.Fatalf("disk: %+v", s)
+		}
 	}
 }

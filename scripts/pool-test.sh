@@ -49,9 +49,10 @@ read -r w1 w2 w3 <<<"$(J 'print(" ".join(sorted(d["sharing"])))')"
 pool() { J "p=[x for x in d['pools'] if x['name']=='$1'];print($2 if p else '')"; }
 waitready() { for _ in $(seq 180); do [ "$(pool $1 'p[0]["state"]')" = ready ] && return 0; sleep 0.5; done; return 1; }
 H pool start qwen --name a --context 2048 --slots 2 --workers $w1,$w2 --split local=1,$w1=1,$w2=2 --kv q8_0 --flash on >/dev/null
-H pool start qwen --name b --context 1024 --workers $w3 --kv-on-host >/dev/null
+H pool start qwen --name b --context 1024 --workers $w3 --kv-on-host --output-layer host >/dev/null
 ok "pool a ready" 'waitready a'
 ok "pool b ready" 'waitready b'
+for n in a b; do [ "$(pool $n 'p[0]["state"]')" = ready ] || pool $n '"%s: %s\n%s" % (p[0]["state"], p[0].get("detail"), "\n".join(p[0].get("log") or []))'; done
 J 'import json;[print(x["name"],x["state"],x["workers"],x.get("parallel"),json.dumps(x["settings"]),[(v.get("name") or v.get("device"),) for v in x.get("devices",[])]) for x in d["pools"]]'
 ok "two pools run at the same time (2 llama-servers)" '[ "$(servers)" = 2 ]'
 ok "pool a uses exactly its chosen workers" '[ "$(pool a "\" \".join(sorted(p[0][\"workers\"]))")" = "$(echo $w1 $w2 | tr " " "\n" | sort | xargs)" ]'
@@ -62,6 +63,7 @@ if "$L/llama-server" --list-devices 2>/dev/null | grep -qiE "CUDA|Vulkan|Metal";
 ok "pool a: split local=1,w1=1,w2=2 reaches llama-server ($want)" 'pgrep -xa llama-server | grep -q -- "$want"'
 if [ "$want" != "--tensor-split 1,1,2" ]; then ok "pool a says the host's share was ignored (no GPU here)" '[ -n "$(pool a "p[0][\"detail\"]" | grep "split share (local=1) is ignored")" ]'; fi
 ok "pool b: KV cache kept in host RAM" 'pgrep -xa llama-server | grep -q -- "--no-kv-offload\|-nkvo"'
+ok "pool b: output layer on the host" 'pgrep -xa llama-server | grep -- "--no-kv-offload" | grep -qF -- "--override-tensor ^(output|token_embd)\.weight\$=CPU"'
 pgrep -xa llama-server | cut -c1-400 > "$R/servers.txt"
 # 3 slots in total across the two replicas: 3 parallel requests all succeed and both pools serve.
 for i in 1 2 3; do H run qwen --prompt "Count to five." --max-tokens 24 --context 512 >"$R/run$i.out" 2>&1 & done; wait $(jobs -p | tail -3) 2>/dev/null

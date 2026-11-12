@@ -254,11 +254,7 @@ func cpuLoad(stat string) *float64 {
 func Basic(ctx context.Context, path string) Snapshot {
 	s := Snapshot{OS: runtime.GOOS, Arch: runtime.GOARCH, CPU: "unknown", LogicalCPUs: runtime.NumCPU(), GPUs: []GPU{}, CollectedAt: time.Now().UTC(),
 		Issues: []string{"GPU discovery is still running (nvidia-smi is slow on this computer right now); GPU details follow shortly"}}
-	if runtime.GOOS == "linux" {
-		if b, e := os.ReadFile("/proc/meminfo"); e == nil {
-			s.RAMTotalBytes, s.RAMAvailableBytes = parseMeminfo(string(b))
-		}
-	}
+	s.RAMTotalBytes, s.RAMAvailableBytes = memory()
 	if path == "" {
 		path = "."
 	}

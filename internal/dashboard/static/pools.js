@@ -99,6 +99,7 @@
       bits.push(p.context + " context" + (p.parallel > 1 ? " · " + p.parallel + " slots (" + Math.floor(p.context / p.parallel) + " each)" : ""));
       bits.push("KV " + (s.cache_type_k || "f16") + "/" + (s.cache_type_v || "f16") + (s.kv_on_host ? " in host RAM" : ""));
       if (s.flash_attn) bits.push("flash attention " + s.flash_attn);
+      if (s.output_layer) bits.push("output layer on " + s.output_layer);
       bits.push(s.no_host_gpu ? "host GPU not used" : "host GPU used");
       bits.push(s.split && Object.keys(s.split).length ? "manual split" : "automatic split");
       bits.push(s.workers && s.workers.length ? "workers: " + s.workers.map(short).join(", ") : "workers: automatic");
@@ -115,6 +116,7 @@
         "<button type=\"button\" class=\"secondary\" data-drop=\"" + i + "\">Remove</button></div>" +
         "<div class=\"hint\">" + esc(bits.join(" · ")) + "</div>" +
         (p.detail ? "<div class=\"hint\">" + esc(p.detail) + "</div>" : "") +
+        (p.warnings || []).map(function (w) { return "<div class=\"hint warn\" data-warning>⚠ " + esc(w) + "</div>"; }).join("") +
         (p.enabled ? "<div class=\"hint\">GPUs in use: " + esc(["this computer"].concat((p.workers || []).map(short)).join(", ")) + (p.offloaded ? " · " + esc(p.offloaded) + " layers offloaded" : "") + "</div>" : "") +
         (rows.length ? "<div class=\"table-wrap\"><table><thead><tr><th>Computer</th><th>Device</th><th>Weights</th><th>KV cache</th><th>Compute</th></tr></thead><tbody>" + rows.join("") + "</tbody></table></div>" : "") +
         (p.state === "failed" && p.log && p.log.length ? "<pre class=\"pool-log\">" + esc(p.log.slice(-6).join("\n")) + "</pre>" : "") +
@@ -184,6 +186,7 @@
     });
     $("edKVHost").checked = !!s.kv_on_host;
     $("edFA").value = s.flash_attn || "";
+    $("edOut").value = s.output_layer || "";
     $("edMsg").textContent = "";
     renderWorkerChoices(s.workers || []);
     hint();
@@ -205,7 +208,7 @@
       workers: chosenWorkers(), no_host_gpu: !$("edHostGPU").checked,
       cache_type_k: $("edCtk").value === "f16" ? "" : $("edCtk").value,
       cache_type_v: $("edCtv").value === "f16" ? "" : $("edCtv").value,
-      kv_on_host: $("edKVHost").checked, flash_attn: $("edFA").value
+      kv_on_host: $("edKVHost").checked, flash_attn: $("edFA").value, output_layer: $("edOut").value
     };
     if ($("edSplitMode").value === "manual") {
       cfg.split = {};

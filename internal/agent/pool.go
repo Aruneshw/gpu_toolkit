@@ -53,6 +53,8 @@ type PoolStatus struct {
 	Devices   []PoolDevice `json:"devices,omitempty"`
 	Offloaded string       `json:"offloaded,omitempty"`
 	InFlight  int          `json:"in_flight"`
+	// Warnings name workers whose link slows this pool down.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // PoolsStatus is the host's whole pool picture.
@@ -213,6 +215,9 @@ func (p *pool) Status() PoolStatus {
 		}
 	} else if c.Enabled && st.State == "ready" {
 		st.State, st.Detail = "starting", "llama-server stopped; restarting"
+	}
+	if len(st.Workers) > 0 && p.owner != nil && p.owner.a != nil {
+		st.Warnings = linkWarnings(st.Workers, p.owner.a.links.Status())
 	}
 	return st
 }
@@ -500,13 +505,18 @@ func (p *pool) reconcile(ctx context.Context, desired []string) {
 			p.observe(ctx, proc)
 			return
 		}
+		// Decide and take the pool out of rotation in one step: a request
+		// that reserved a slot after an unlocked check would otherwise reach
+		// a llama-server that is being stopped.
 		p.mu.Lock()
-		busy := p.inflight > 0
-		p.mu.Unlock()
-		if busy {
-			p.set("ready", "the settings or the shared GPUs changed; reloading after the current requests")
+		if p.inflight > 0 {
+			p.state, p.detail = "ready", "the settings or the shared GPUs changed; reloading after the current requests"
+			p.mu.Unlock()
 			return
 		}
+		p.state, p.detail = "starting", "reloading with the new settings or shared GPUs"
+		p.mu.Unlock()
+		beforeReloadStop()
 		p.stop()
 	}
 	p.mu.Lock()
@@ -517,6 +527,26 @@ func (p *pool) reconcile(ctx context.Context, desired []string) {
 	}
 	p.start(ctx, c, desired)
 }
+
+// outputDevice is where a pool's output layer goes (see
+// config.PoolConfig.OutputLayer): "" leaves llama.cpp's choice. Without
+// workers nothing crosses the network, so nothing is overridden.
+func outputDevice(c config.PoolConfig, local []string, workers int) string {
+	if workers == 0 || c.OutputLayer == "worker" {
+		return ""
+	}
+	if !c.NoHostGPU && len(local) > 0 {
+		return local[0]
+	}
+	if c.OutputLayer == "host" {
+		return "CPU"
+	}
+	return ""
+}
+
+// beforeReloadStop runs between deciding to reload a pool and stopping its
+// llama-server; tests use it to send a request into that gap.
+var beforeReloadStop = func() {}
 
 func same(a, b []string) bool {
 	if len(a) != len(b) {
@@ -675,6 +705,10 @@ func (p *pool) start(ctx context.Context, c config.PoolConfig, workers []string)
 			fmt.Fprintf(p.log, "note: %s\n", note)
 		}
 	}
+	outputOn := outputDevice(c, local, len(workers))
+	if outputOn != "" {
+		fmt.Fprintf(p.log, "note: the output layer runs on this computer (%s), so workers send it a small hidden state per token instead of the whole vocabulary's logits\n", outputOn)
+	}
 	endpoint, err := p.owner.endpointFor(p)
 	if err != nil {
 		fail(err.Error())
@@ -725,7 +759,7 @@ func (p *pool) start(ctx context.Context, c config.PoolConfig, workers []string)
 		// by free memory, or by the pool's split weights.
 		proc.err = backend.Run(procCtx, backend.LaunchConfig{Binary: binary, RegistryDir: filepath.Join(a.dir, "models"), Model: c.Model, Endpoint: endpoint,
 			Context: contextSize, GPULayers: 999, RPC: addrs, Devices: devices, TensorSplit: split, Parallel: c.Parallel,
-			CacheTypeK: c.CacheTypeK, CacheTypeV: c.CacheTypeV, NoKVOffload: c.KVOnHost, FlashAttn: c.FlashAttn, Verbose: true,
+			CacheTypeK: c.CacheTypeK, CacheTypeV: c.CacheTypeV, NoKVOffload: c.KVOnHost, FlashAttn: c.FlashAttn, OutputOn: outputOn, Verbose: true,
 			Stdout: out, Stderr: out})
 		cancel()
 		for _, l := range listeners {
@@ -755,7 +789,7 @@ func (p *pool) forward(ctx context.Context, l net.Listener, id string) {
 			}
 			unhook := context.AfterFunc(ctx, func() { remote.Close(); local.Close() })
 			defer unhook()
-			tunnel.Pipe(local, remote)
+			tunnel.MeteredPipe(local, remote, a.links.meter(id))
 		}()
 	}
 }

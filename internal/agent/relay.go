@@ -14,6 +14,7 @@ import (
 	"meshcompute/internal/config"
 	"meshcompute/internal/security"
 	"meshcompute/internal/tunnel"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -57,7 +58,7 @@ func (a *Agent) acceptWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if _, err = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: meshcompute/1\r\n\r\n"); err == nil {
+	if _, err = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: meshcompute/1\r\n" + a.pathsHeader() + "\r\n"); err == nil {
 		err = rw.Flush()
 	}
 	if err != nil {
@@ -65,6 +66,8 @@ func (a *Agent) acceptWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetDeadline(time.Time{})
+	local, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	a.links.setPath(id, classifyPath(local, tc.RemoteAddr(), a.c.Relay != ""), local)
 	_, _ = a.broker.RegisterTLS(r.Context(), tc, a.verifyWorker)
 }
 
@@ -245,13 +248,26 @@ func (a *Agent) connectLoop(ctx context.Context, endpoint string, primary bool) 
 	for ctx.Err() == nil {
 		start := time.Now()
 		upgraded := false
-		err = tunnel.ServeWorkerNotify(ctx, endpoint, cfg, handler, func() { upgraded = true; announce() })
+		ep, epCfg := endpoint, cfg
+		if a.hostPaths != nil {
+			ep, epCfg = a.hostPaths.current(cfg)
+		}
+		err = tunnel.ServeWorkerNotify(ctx, ep, epCfg, handler, func(h http.Header) {
+			upgraded = true
+			announce()
+			if a.hostPaths != nil && primary {
+				a.hostPaths.offer(h.Get(PathsHeader))
+			}
+		})
 		if ctx.Err() != nil {
 			return
 		}
 		// A connection that lasted, or ended cleanly, was accepted by the host;
 		// idle renewals every 30 seconds are normal and are not logged.
 		ok := upgraded || err == nil || time.Since(start) > 10*time.Second
+		if a.hostPaths != nil {
+			a.hostPaths.result(ep, ok)
+		}
 		if ok {
 			delay = 250 * time.Millisecond
 			announce()

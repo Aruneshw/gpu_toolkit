@@ -209,6 +209,9 @@
   .rtt.good { color: var(--accent); border-color: var(--accent-dim); }
   .rtt.mid { color: var(--warn); border-color: #6b4e1f; }
   .rtt.bad { color: var(--bad); border-color: #6e2b27; }
+  .hint.warn { color: var(--warn); }
+  .badge.path-relay { color: var(--warn); border-color: #6b4e1f; }
+  .rpc-line { font: .72rem var(--mono); margin: .2rem 0; }
   .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; padding: .6rem; }
   .pane { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; min-width: 0; background: #0b1016; }
   .pane.focus { border-color: var(--accent); }
@@ -350,6 +353,7 @@
           <label class="inline">V <select id="edCtv"></select></label>
           <label class="switch" title="Keeps the KV cache in this computer's RAM: frees VRAM, but is slower"><input type="checkbox" id="edKVHost"> KV cache in host RAM</label>
           <label class="inline">Flash attention <select id="edFA"><option value="">auto</option><option value="on">on</option><option value="off">off</option></select></label>
+          <label class="inline" title="Where the last layer, which turns each token into scores for the whole vocabulary, runs. On the host, workers send a few KB per token instead of every token's logits (hundreds of KB). Auto: on the host when the host's GPU is in the pool.">Output layer <select id="edOut"><option value="">auto</option><option value="host">host</option><option value="worker">last worker</option></select></label>
         </div>
         <div class="hint" id="edHint"></div>
         <div class="pool-row">

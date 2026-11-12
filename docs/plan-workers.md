@@ -61,13 +61,20 @@ Workers never pass activations directly to each other. Consequences:
   each with its own model and its own chosen workers; requests go to a chosen
   pool or round-robin over replicas of the same model.
 
-### Phase 4: faster links
+### Phase 4: faster links (done 2026-11-12)
 - TCP_NODELAY and larger socket buffers on every tunnel stream (RPC sends many
-  small messages per token).
+  small messages per token). Go already sets TCP_NODELAY on every TCP socket;
+  buffers larger than 64 KiB measured no faster (TLS records are 16 KiB).
 - Continuous RTT and throughput measurement per worker, shown on the fleet
-  cards; warnings when a worker would slow the whole pool.
+  cards; warnings when a worker would slow the whole pool. Done: echo stream
+  through the tunnel, metered RPC streams (bytes, round trips), path label.
+  The old 14-19 ms figure was mostly a TLS handshake to the local agent; the
+  tunnel itself adds about 0.25 ms on loopback.
 - Prefer a direct mesh (Tailscale/WireGuard) path over the public relay when
-  both computers are on the mesh.
+  both computers are on the mesh. Done: host lists its mesh addresses in the
+  reverse-connection answer; workers time and switch, with fallback.
+- Found while measuring: the output layer's logits (~600 KB per token) were
+  the largest per-token transfer; `output_layer` keeps it on the host.
 
 ### Phase 5: topology and multi-hop routing
 - Workers report their LAN and mesh addresses; the host asks pairs of workers

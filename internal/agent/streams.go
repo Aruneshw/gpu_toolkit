@@ -90,6 +90,11 @@ func (a *Agent) connectWorker(ctx context.Context, endpoint string) {
 	if a.allowTerminal() && terminalSupported() {
 		fmt.Fprintln(a.log.Writer(), "Remote terminal: ON. The group host can open a shell on this computer as your user. Turn it off with: meshcompute config set allow_terminal false")
 	}
+	a.hostPaths = newHostPaths(a.dir, endpoint, func(msg string) {
+		a.log.Printf("event=host_path note=%q", msg)
+		fmt.Fprintf(a.log.Writer(), "%s  %s\n", time.Now().Format("15:04:05"), msg)
+	})
+	go a.hostPaths.run(ctx)
 	var loops sync.WaitGroup
 	for i := 0; i < workerConnections; i++ {
 		loops.Add(1)
@@ -138,6 +143,8 @@ func (a *Agent) serveStream(ctx context.Context, w http.ResponseWriter, r *http.
 		a.termOpen--
 		a.mu.Unlock()
 		a.log.Print("event=remote_terminal state=closed")
+	case StreamEcho:
+		serveEcho(w, r, ctx)
 	case StreamRPC:
 		rpc := a.rpcServer()
 		if rpc == nil {
@@ -167,7 +174,7 @@ func (a *Agent) serveStream(ctx context.Context, w http.ResponseWriter, r *http.
 		}
 		stop := context.AfterFunc(ctx, func() { conn.Close() })
 		defer stop()
-		tunnel.Pipe(conn, local)
+		tunnel.MeteredPipe(local, conn, nil)
 	default:
 		http.NotFound(w, r)
 	}

@@ -36,7 +36,10 @@ type FleetNode struct {
 	Error     string        `json:"error,omitempty"`
 	Status    *agent.Status `json:"status,omitempty"`
 	RTTMillis *float64      `json:"rtt_ms,omitempty"`
-	LastSeen  time.Time     `json:"last_seen,omitempty"`
+	// Link is the host's own measurement of its link to this worker (path,
+	// round trip through the tunnel, llama.cpp RPC traffic).
+	Link     *agent.LinkStatus `json:"link,omitempty"`
+	LastSeen time.Time         `json:"last_seen,omitempty"`
 	// Tasks this dashboard sent to (host) or received on (worker) this node.
 	TasksRunning int `json:"tasks_running"`
 	TasksWaiting int `json:"tasks_waiting"`
@@ -135,10 +138,29 @@ func (s *Server) sampleFleet(ctx context.Context) {
 		return
 	}
 	rtts := make([]*float64, len(nodes))
+	// The host measures each worker's link through the tunnel itself; a
+	// status request is timed only for workers it has no measurement of
+	// (older releases), and that time includes a TLS handshake.
+	var links map[string]agent.LinkStatus
+	for _, n := range nodes {
+		if n.Name == "local" && n.Status != nil {
+			links = n.Status.Links
+		}
+	}
+	linkOf := make([]*agent.LinkStatus, len(nodes))
+	for i, n := range nodes {
+		if l, ok := links[n.Name]; ok && n.Name != "local" {
+			l := l
+			linkOf[i] = &l
+			if l.RTTMillis != nil {
+				rtts[i] = l.RTTMillis
+			}
+		}
+	}
 	if p, ok := s.cluster.(Pinger); ok {
 		var wg sync.WaitGroup
 		for i, n := range nodes {
-			if n.Name == "local" || !n.Healthy {
+			if n.Name == "local" || !n.Healthy || rtts[i] != nil {
 				continue
 			}
 			wg.Add(1)
@@ -195,7 +217,7 @@ func (s *Server) sampleFleet(ctx context.Context) {
 			f.entries[n.Name] = e
 		}
 		last := e.node.LastSeen
-		e.node = FleetNode{Name: n.Name, Healthy: n.Healthy, Error: n.Error, Status: n.Status, RTTMillis: rtts[i], LastSeen: last,
+		e.node = FleetNode{Name: n.Name, Healthy: n.Healthy, Error: n.Error, Status: n.Status, RTTMillis: rtts[i], Link: linkOf[i], LastSeen: last,
 			TasksRunning: running[n.Name], TasksWaiting: waiting[n.Name], TasksDone: done[n.Name], Terminals: terms[n.Name]}
 		if !n.Healthy || n.Status == nil {
 			continue

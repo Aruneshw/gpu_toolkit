@@ -421,3 +421,38 @@ ignored host split share was silent.
 Not run: the terminal on a Windows worker (Wine has no working ConPTY; the
 Windows CI jobs run the ConPTY and terminal tests), and pools on two physical
 GPUs.
+
+## 2026-11-12: faster links (phase 4)
+
+- `make verify` and `go test -race ./...` pass. New tests: metered pipe
+  (exact byte and round-trip counts), mesh-path offer and switching (host on
+  127.0.0.1 also listening on 127.0.0.2; the worker moves there and the host
+  measures the link through the tunnel; fails if the worker ignores the
+  offer), fallback after two failures, path labels, slow-link and logits
+  warnings, output layer placement, and a reload race (a request could take a
+  slot on a llama-server being stopped; the test fails without the fix).
+- Tunnel micro-benchmark (echo server standing in for ggml-rpc-server, host
+  and worker on loopback, 2000 round trips of 64 bytes): direct p50 54-73 us,
+  through MeshCompute p50 285-303 us (p99 650-820 us); bulk echo 463-586 MiB/s
+  direct, 195-223 MiB/s through the tunnel; 256 KiB copy buffers made no
+  difference.
+- Live pool, real llama.cpp b12119 CPU build, Qwen2.5-0.5B, two workers:
+  12-16 RPC round trips per second per worker at 12.8-14.5 tokens/s (about one
+  per token); the last worker sent 7.4-9.2 MB/s to the host (the logits,
+  151936 x 4 bytes per token); with `--output-layer host` 40-47 KB/s, at
+  12.8 instead of 14.5 tokens/s on loopback (the host CPU computes the output
+  layer; on a real link the 9 MB/s would usually cost more).
+- `scripts/pool-test.sh` (now 26 checks, including the output layer
+  override) passed 3 of 4 runs; in the first run both pools went to "failed"
+  and the run kept no detail, so the script now prints a pool's state and log
+  when it is not ready. `scripts/ui-test.sh` with five workers and a real pool:
+  60 checks pass, including path badges, round trips measured through the
+  tunnel, and RPC byte counters on the pooled workers.
+- Windows: CI showed `resource.Basic` taking ~5 s (PowerShell for disk
+  space), which made the first status request slow; disk and memory now come
+  from kernel32 directly. Under Wine the pool test sometimes failed with a
+  refused invitation; identity.json reads and replaces are now retried on
+  Windows, where replacing an open file fails.
+
+Not run: a real mesh VPN between two computers (the switching logic is tested
+with a second loopback address), and pools on physical GPUs.

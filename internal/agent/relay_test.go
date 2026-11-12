@@ -18,15 +18,48 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
+// testLog keeps an agent's log so a failing test can show it.
+type testLog struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (l *testLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.buf = append(l.buf, p...)
+	if over := len(l.buf) - 64<<10; over > 0 {
+		l.buf = l.buf[over:]
+	}
+	return len(p), nil
+}
+
+func (l *testLog) tail() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s := string(l.buf)
+	if len(s) > 6000 {
+		s = s[len(s)-6000:]
+	}
+	return s
+}
+
 func startAgent(t *testing.T, ctx context.Context, dir string, c config.Config, l net.Listener) {
 	t.Helper()
 	done := make(chan error, 1)
-	go func() { done <- agent.New(dir, c, io.Discard).ServeListener(ctx, l) }()
+	logs := &testLog{}
+	go func() { done <- agent.New(dir, c, logs).ServeListener(ctx, l) }()
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("agent %s log (tail):\n%s", filepath.Base(dir), logs.tail())
+		}
+	})
 	t.Cleanup(func() {
 		select {
 		case err := <-done:

@@ -278,7 +278,7 @@ func ServeWorker(ctx context.Context, endpoint string, cfg *tls.Config, handler 
 
 // ServeWorkerNotify is ServeWorker with a callback invoked once the host has
 // accepted the reverse connection (before any request is served).
-func ServeWorkerNotify(ctx context.Context, endpoint string, cfg *tls.Config, handler http.Handler, accepted func()) error {
+func ServeWorkerNotify(ctx context.Context, endpoint string, cfg *tls.Config, handler http.Handler, accepted func(http.Header)) error {
 	u, err := url.Parse(endpoint)
 	if err != nil {
 		return err
@@ -320,7 +320,7 @@ func ServeWorkerNotify(ctx context.Context, endpoint string, cfg *tls.Config, ha
 	}
 	limited.N = 1<<63 - 1
 	if accepted != nil {
-		accepted()
+		accepted(resp.Header)
 	}
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		return err

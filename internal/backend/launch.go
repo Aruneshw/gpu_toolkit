@@ -35,6 +35,9 @@ type LaunchConfig struct {
 	NoKVOffload bool
 	// FlashAttn is "", auto, on or off.
 	FlashAttn string
+	// OutputOn, when set, places the output layer (output.weight, or the
+	// tied token_embd.weight) on this buffer type: CPU or a device name.
+	OutputOn string
 	// Verbose raises the log level so per-device buffer sizes are printed.
 	Verbose bool
 }
@@ -116,6 +119,15 @@ func Args(c LaunchConfig, modelPath, alias string) ([]string, error) {
 		args = append(args, "--flash-attn", c.FlashAttn)
 	default:
 		return nil, errors.New("flash attention must be auto, on or off")
+	}
+	if c.OutputOn != "" {
+		if c.OutputOn != "CPU" && (!deviceName.MatchString(c.OutputOn) || c.OutputOn == "none") {
+			return nil, errors.New("invalid output layer device " + c.OutputOn)
+		}
+		// Anchored: an unanchored "output.weight" also matches every
+		// attn_output.weight. A model with tied embeddings uses
+		// token_embd.weight as its output layer.
+		args = append(args, "--override-tensor", `^(output|token_embd)\.weight$=`+c.OutputOn)
 	}
 	if c.Verbose {
 		args = append(args, "--log-verbosity", "4")

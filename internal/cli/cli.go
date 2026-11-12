@@ -37,7 +37,7 @@ Usage: meshcompute [--home DIR] COMMAND
                                   host open a shell here; --tasks decides whether
                                   commands the host sends need your approval
   pool start MODEL [--name N] [--context N] [--slots N] [--workers ID,..]
-       [--split local=1,ID=3] [--kv q8_0] [--kv-on-host] [--flash on] [--no-host-gpu]
+       [--split local=1,ID=3] [--kv q8_0] [--kv-on-host] [--flash on] [--output-layer host] [--no-host-gpu]
                                   host: serve MODEL across shared GPUs (one pool
                                   per name; a worker lends its GPU to one pool)
   pool stop [NAME] | pool remove NAME | pool status

@@ -46,10 +46,32 @@
     });
     return "<svg class=\"spark\" viewBox=\"0 0 " + W + " " + H + "\" preserveAspectRatio=\"none\">" + paths.join("") + "</svg>";
   }
-  function rttBadge(ms) {
+  function rttBadge(ms, link) {
     if (typeof ms !== "number") return "";
     var cls = ms < 30 ? "good" : (ms < 120 ? "mid" : "bad");
-    return "<span class=\"rtt " + cls + "\" title=\"round trip from the host through the encrypted link\">" + (ms < 10 ? ms.toFixed(1) : Math.round(ms)) + " ms</span>";
+    var how = link && link.measured === "tunnel" ? "round trip through the encrypted tunnel the pool uses (median of the last 30 s)" : "time of one status request through the encrypted link, including a TLS handshake";
+    return "<span class=\"rtt " + cls + "\" data-rtt title=\"" + how + "\">" + (ms < 10 ? ms.toFixed(1) : Math.round(ms)) + " ms</span>";
+  }
+  var pathNames = { relay: "via relay", mesh: "mesh VPN", direct: "direct", local: "same computer" };
+  function pathBadge(link) {
+    if (!link || !pathNames[link.path]) return "";
+    var tip = { relay: "connected through the public TCP relay: works anywhere, but every round trip makes a detour", mesh: "connected over a mesh VPN (Tailscale, WireGuard, ...)", direct: "connected straight to the host's address", local: "a worker on this computer" }[link.path];
+    return "<span class=\"badge path-" + esc(link.path) + "\" data-path=\"" + esc(link.path) + "\" title=\"" + tip + "\">" + pathNames[link.path] + "</span>";
+  }
+  function rate(b) {
+    return b >= 1048576 ? (b / 1048576).toFixed(1) + " MB/s" : b >= 1024 ? Math.round(b / 1024) + " kB/s" : Math.round(b) + " B/s";
+  }
+  // The pool's traffic to this worker, and how much of the pool's time
+  // waits on its link.
+  function rpcLine(link) {
+    if (!link || !(link.rpc_up_bps > 0 || link.rpc_down_bps > 0)) return "";
+    var bits = ["RPC ↑ " + rate(link.rpc_up_bps) + " ↓ " + rate(link.rpc_down_bps), Math.round(link.rpc_round_trips_per_s) + " round trips/s"];
+    var cls = "";
+    if (typeof link.wait_share === "number") {
+      bits.push("≈" + Math.round(link.wait_share * 100) + "% of the time waiting on this link");
+      if (link.wait_share >= 0.4) cls = " warn";
+    }
+    return "<div class=\"hint rpc-line" + cls + "\" data-rpc>" + esc(bits.join(" · ")) + "</div>";
   }
   // Names of the ready pools a computer takes part in.
   function poolsOf(name) {
@@ -74,10 +96,11 @@
     });
     var name = n.name === "local" ? (role === "worker" ? "this computer" : "host (this computer)") : short(n.name);
     var h = "<div class=\"twin-head\"><span class=\"dot" + (n.healthy ? " ok" : "") + "\"></span><b title=\"" + esc(n.name) + "\">" + esc(name) + "</b>";
-    h += rttBadge(n.rtt_ms);
+    h += rttBadge(n.rtt_ms, n.link) + pathBadge(n.link);
     if (st.rpc_ready) h += "<span class=\"badge\">lending GPU</span>";
     poolsOf(n.name).forEach(function (p) { h += "<span class=\"badge\">pool " + esc(p) + "</span>"; });
     h += "</div>";
+    h += rpcLine(n.link);
     h += "<div class=\"gpu-name\">" + esc(gpus.length ? gpus.map(function (g) { return g.name; }).join(" + ") : "no NVIDIA GPU reported") + (res.os ? " · " + esc(res.os) : "") + "</div>";
     if (!n.healthy) {
       var seen = n.last_seen && n.last_seen.indexOf("0001") !== 0 ? new Date(n.last_seen).toLocaleTimeString() : "never";

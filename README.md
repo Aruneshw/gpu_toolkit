@@ -160,6 +160,41 @@ meshcompute --home ~/.meshcompute-group pool stop spare     # or: pool remove sp
 
 Worker IDs can be shortened to any unique prefix.
 
+### Links between the computers
+
+llama.cpp RPC is a star: for every token the host exchanges data with each
+worker in turn (about one round trip per worker per token), so the slowest
+link sets the pace.
+
+- **Measured link:** the host keeps a tiny echo stream open to every worker
+  through the same encrypted tunnel the pool uses and shows the median round
+  trip on the fleet card, with the path: *mesh VPN*, *direct*, *via relay* or
+  *same computer*. While a pool runs, the card also shows that worker's RPC
+  traffic (MB/s each way, round trips per second) and roughly how much of the
+  time the pool waits on its link.
+- **Warnings** on the pool card name a worker whose link is much slower than
+  the others', one that goes through the public relay, or one that sends the
+  host every token's logits.
+- **Mesh before relay:** a host reached through the relay (or a public
+  address) also listens on its Tailscale/WireGuard address. Friends on the
+  same mesh learn it when they connect, time both paths, and move to the
+  mesh by themselves; if it stops working they go back to the relay. The
+  host's identity is checked the same way on every path. Turn it off with
+  `MESHCOMPUTE_MESH_PATHS=off`.
+- **Output layer on the host:** the last layer turns each token into scores
+  for the whole vocabulary (about 600 KB per token for a 150k-word vocabulary).
+  When it runs on a worker, that worker sends all of it to the host for every
+  token; on the host, workers send a few KB instead. `auto` keeps it on the
+  host when the host's GPU is in the pool; `--output-layer host` also does so
+  on a host without a GPU (its CPU then computes it), `worker` leaves
+  llama.cpp's default.
+
+Measured on one laptop (loopback, so no real network): the tunnel adds about
+0.25 ms per round trip and carries about 200 MiB/s; a 2-worker pool of
+Qwen2.5-0.5B made 12 to 16 round trips per second per worker at 13 to 15
+tokens/s, and the last worker sent about 9 MB/s of logits, which dropped to
+about 45 KB/s with the output layer on the host.
+
 ## Terminal on a friend's laptop
 
 The friend decides. When joining from the menu they are asked *Allow a remote
@@ -233,7 +268,7 @@ controls, several pools, faster links, multi-hop) are in
   tunnel); two named pools of one model at once over three workers with
   their own split, KV cache and slot settings (`scripts/pool-test.sh`) and the
   dashboard with five workers (`scripts/ui-test.sh`), both with real
-  llama.cpp; Linux and real-Windows CI through `linux.sh`/`win.bat`;
+  llama.cpp; link measurement, mesh-path switching and fallback in Go tests; Linux and real-Windows CI through `linux.sh`/`win.bat`;
   live joins over IPv6 and through bore.pub. **Not yet established:** the pool
   on two physical GPUs, a running Tailscale client, and the Windows remote
   terminal on a physical PC. Details in

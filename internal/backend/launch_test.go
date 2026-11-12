@@ -7,6 +7,7 @@ import (
 	"meshcompute/internal/model"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -54,5 +55,23 @@ func TestForegroundLaunch(t *testing.T) {
 	}
 	if err := Run(context.Background(), c); err == nil {
 		t.Fatal("launched changed model")
+	}
+}
+
+func TestOutputLayerOverride(t *testing.T) {
+	c := LaunchConfig{Context: 512, GPULayers: 999, Endpoint: "http://127.0.0.1:8080", RPC: []string{"127.0.0.1:5000"}, OutputOn: "CPU"}
+	args, err := Args(c, "/m/model.gguf", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, `--override-tensor ^(output|token_embd)\.weight$=CPU`) {
+		t.Fatalf("%s", joined)
+	}
+	for _, bad := range []string{"none", "CPU;rm", "../x", "Vulkan"} {
+		c.OutputOn = bad
+		if _, err := Args(c, "/m/model.gguf", "m"); err == nil {
+			t.Errorf("accepted output device %q", bad)
+		}
 	}
 }

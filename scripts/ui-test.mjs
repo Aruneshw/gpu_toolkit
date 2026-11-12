@@ -103,6 +103,11 @@ try {
   check(cards === N + 1, "one fleet card per computer", cards);
   const rtts = await waitFor("every worker shows a round trip", `Array.from(document.querySelectorAll('#fleet .rtt')).length >= ${N} && Array.from(document.querySelectorAll('#fleet .rtt')).map(e => e.textContent)`, 20000);
   check(Array.isArray(rtts) && rtts.every((t) => / ms$/.test(t)), "round-trip badges in ms", rtts);
+  await waitFor("every worker's round trip is measured through the tunnel", `(() => {
+    const badges = Array.from(document.querySelectorAll('#fleet .twin:not(#twin-local) [data-rtt]'));
+    return badges.length === ${N} && badges.every(b => /tunnel/.test(b.title));
+  })()`, 20000);
+  check(await evaluate(`Array.from(document.querySelectorAll('#fleet .twin:not(#twin-local) [data-path]')).filter(b => b.dataset.path === 'local').length === ${N}`), "every worker card names its path (same computer here)");
   const meters = await evaluate("document.querySelector('#fleet .twin').innerText");
   check(/GPU/.test(meters) && /VRAM/.test(meters) && /Temp/.test(meters) && /Power/.test(meters) && /CPU/.test(meters) && /RAM/.test(meters), "host card shows GPU, VRAM, Temp, Power, CPU, RAM", meters);
   if (process.env.HAS_NVIDIA === "1") check(/°C/.test(meters) && !/no NVIDIA GPU/.test(meters), "real GPU name and temperature on the host card", meters);
@@ -222,6 +227,12 @@ try {
     await evaluate("(() => { const $ = id => document.getElementById(id); $('pool').value = 'ui'; $('context').value = 1024; $('maxTokens').value = 12; $('prompt').value = 'The capital of France is'; $('run').click(); return true; })()");
     await waitFor("the pooled model answers in the page", "document.getElementById('output').textContent.trim().length > 3", 60000);
     check(await evaluate("window.__runBodies.length === 1 && window.__runBodies[0].pool === 'ui'"), "the run went to the chosen pool", await evaluate("window.__runBodies"));
+    const rpc = await waitFor("the two pooled workers report RPC traffic", `(async () => {
+      const f = await (await fetch('/api/fleet')).json();
+      const moved = f.nodes.filter(n => n.link && n.link.rpc_up_total > 0 && n.link.rpc_down_total > 0);
+      return moved.length === 2 && moved.map(n => n.link.rpc_up_total);
+    })()`, 15000);
+    check(Array.isArray(rpc), "RPC byte counters on the pooled workers", rpc);
     await waitFor("run panel idle again", "!document.getElementById('run').disabled", 30000);
     const unknown = await evaluate(`fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node: 'local', model: 'uimodel', pool: 'nope', prompt: 'hi', max_tokens: 4, context: 512 }) }).then(r => r.text())`);
     check(/no pool named nope/.test(unknown), "an unknown pool is refused with its name", unknown);

@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -97,24 +98,58 @@ func lock(dir string) (func(), error) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// replaceRetry is how long Windows file operations on identity.json are
+// retried. Every request reads the file and every change replaces it; on
+// Windows a replace fails while the file is open elsewhere, and an open can
+// fail for a moment while it is being replaced. Elsewhere both always work.
+var replaceRetry = func() time.Duration {
+	if runtime.GOOS == "windows" {
+		return 2 * time.Second
+	}
+	return 0
+}()
+
+// retry runs op until it succeeds or replaceRetry has passed.
+func retry(op func() error) error {
+	deadline := time.Now().Add(replaceRetry)
+	for {
+		err := op()
+		if err == nil || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func load(dir string) (state, error) {
 	var s state
 	if err := secureDir(dir); err != nil {
 		return s, err
 	}
 	p := filepath.Join(dir, "identity.json")
-	fi, err := os.Lstat(p)
-	if err != nil || !fi.Mode().IsRegular() || !privatePerm(fi.Mode()) {
-		return s, fail()
-	}
-	f, err := os.Open(p)
-	if err != nil {
-		return s, fail()
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, 8<<20))
-	if err != nil || json.Unmarshal(b, &s) != nil {
-		return s, fail()
+	var b []byte
+	err := retry(func() error {
+		fi, err := os.Lstat(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil // reported below, not retried
+			}
+			return err
+		}
+		if !fi.Mode().IsRegular() || !privatePerm(fi.Mode()) {
+			return nil
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		b, err = io.ReadAll(io.LimitReader(f, 8<<20))
+		return err
+	})
+	if err != nil || b == nil || json.Unmarshal(b, &s) != nil {
+		return state{}, fail()
 	}
 	return s, nil
 }
@@ -138,7 +173,7 @@ func save(dir string, s state) error {
 	if err != nil || closeErr != nil {
 		return fail()
 	}
-	if os.Rename(f.Name(), filepath.Join(dir, "identity.json")) != nil {
+	if retry(func() error { return os.Rename(f.Name(), filepath.Join(dir, "identity.json")) }) != nil {
 		return fail()
 	}
 	return syncDir(dir)

@@ -297,7 +297,7 @@ func operational(ctx context.Context, dir string, c config.Config, command strin
 func poolCommand(ctx context.Context, dir string, c config.Config, args []string, out io.Writer) error {
 	const usage = `usage: pool start MODEL [--name main] [--context 4096] [--slots 1] [--workers ID,ID]
                   [--split local=1,ID=3] [--kv q8_0] [--kv-k TYPE] [--kv-v TYPE] [--kv-on-host]
-                  [--flash auto|on|off] [--no-host-gpu]
+                  [--flash auto|on|off] [--output-layer auto|host|worker] [--no-host-gpu]
        pool stop [NAME] | pool remove NAME | pool status`
 	if len(args) == 0 {
 		return errors.New(usage)
@@ -368,6 +368,7 @@ func poolCommand(ctx context.Context, dir string, c config.Config, args []string
 			f.StringVar(&kvV, "kv-v", "", "KV cache type for V")
 			f.BoolVar(&kvHost, "kv-on-host", false, "keep the KV cache in host RAM")
 			f.StringVar(&p.FlashAttn, "flash", "", "flash attention: auto, on or off")
+			f.StringVar(&p.OutputLayer, "output-layer", "", "where the output layer runs: auto, host or worker")
 			f.BoolVar(&noHost, "no-host-gpu", false, "do not use this computer's GPU")
 		}); e != nil {
 			return fmt.Errorf("%w\n%s", e, usage)
