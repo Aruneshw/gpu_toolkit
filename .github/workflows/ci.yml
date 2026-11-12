@@ -28,12 +28,22 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: vet
         run: go vet ./...
+      # Failing test lines are also emitted as annotations, so they show up
+      # next to the job without opening the full log.
       - name: test with race detector
         if: runner.os == 'Linux'
-        run: go test -race ./... -count=1
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -race ./... -count=1 2>&1 | tee test.log || {
+            grep -E -- '--- FAIL|_test\.go:[0-9]+:|^panic:|DATA RACE|^FAIL' test.log | head -40 | sed 's/^/::error::/'; exit 1; }
       - name: test
         if: runner.os == 'Windows'
-        run: go test ./... -count=1
+        shell: bash
+        run: |
+          set -o pipefail
+          go test ./... -count=1 2>&1 | tee test.log || {
+            grep -E -- '--- FAIL|_test\.go:[0-9]+:|^panic:|^FAIL' test.log | head -40 | sed 's/^/::error::/'; exit 1; }
       - name: build
         run: go build ./...
 

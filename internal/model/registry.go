@@ -243,11 +243,14 @@ func Scan(dir string) ([]Found, error) {
 			return nil
 		}
 		info, err := d.Info()
-		if err != nil || !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+		if err != nil {
 			return nil
 		}
 		size := info.Size()
-		if info.Mode()&os.ModeSymlink != 0 {
+		if !info.Mode().IsRegular() {
+			// A symlink, or on Windows a reparse point such as a OneDrive
+			// or deduplicated file, which Go may report as irregular: use
+			// it when it resolves to a regular file.
 			target, err := os.Stat(path)
 			if err != nil || !target.Mode().IsRegular() {
 				return nil

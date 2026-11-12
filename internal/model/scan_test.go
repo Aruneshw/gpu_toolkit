@@ -29,11 +29,17 @@ func TestScanFindsModelsAndSplitParts(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(root, "Qwen2.5-7B-Instruct-Q4_K_M.gguf"), filepath.Join(root, "link.gguf")); err != nil {
-		t.Fatal(err)
+	// Links need a privilege on Windows, and Wine reports success without
+	// creating them: test links only where they really exist.
+	links := os.Symlink(filepath.Join(root, "Qwen2.5-7B-Instruct-Q4_K_M.gguf"), filepath.Join(root, "link.gguf")) == nil &&
+		os.Symlink(root, filepath.Join(root, "loop")) == nil
+	if links {
+		_, err1 := os.Lstat(filepath.Join(root, "link.gguf"))
+		_, err2 := os.Lstat(filepath.Join(root, "loop"))
+		links = err1 == nil && err2 == nil
 	}
-	if err := os.Symlink(root, filepath.Join(root, "loop")); err != nil {
-		t.Fatal(err)
+	if !links {
+		t.Log("symbolic links are not available here; skipping the link checks")
 	}
 	found, err := Scan(root)
 	if err != nil {
@@ -44,8 +50,8 @@ func TestScanFindsModelsAndSplitParts(t *testing.T) {
 		rel, _ := filepath.Rel(root, f.Path)
 		got[rel] = f
 	}
-	if len(got) != 3 {
-		t.Fatalf("%+v", found)
+	if want := map[bool]int{true: 3, false: 2}[links]; len(got) != want {
+		t.Fatalf("want %d models: %+v", want, found)
 	}
 	q := got["Qwen2.5-7B-Instruct-Q4_K_M.gguf"]
 	if q.SizeBytes != 100 || q.Parts != 1 || q.Suggested != "qwen2.5-7b-instruct-q4_k_m" {
@@ -55,7 +61,7 @@ func TestScanFindsModelsAndSplitParts(t *testing.T) {
 	if l.SizeBytes != 60 || l.Parts != 3 || l.Suggested != "llama-70b" {
 		t.Fatalf("split model %+v", l)
 	}
-	if link := got["link.gguf"]; link.SizeBytes != 100 {
+	if link := got["link.gguf"]; links && link.SizeBytes != 100 {
 		t.Fatalf("symlinked file %+v", link)
 	}
 	if _, err := Scan(filepath.Join(root, "notes.txt")); err == nil {
