@@ -49,7 +49,7 @@ Workers never pass activations directly to each other. Consequences:
   worker 3's terminal runs on worker 3. Optional "type into all selected".
 - Session limit raised from 8 to 24.
 
-### Phase 3: pool controls
+### Phase 3: pool controls (done 2026-11-12)
 - Model library: point at a folder (for example the external HDD), list every
   `.gguf` with its size, register with one click.
 - Layer split: automatic by free VRAM, or manual weights per device

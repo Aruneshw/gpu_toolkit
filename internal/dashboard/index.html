@@ -220,6 +220,17 @@
   .pane-term .xterm-viewport { background: #0b1016 !important; }
   .pane-off { color: var(--muted); font-size: .8rem; padding: 1rem; }
   @media (max-width: 760px) { .grid { grid-template-columns: minmax(0, 1fr) !important; } }
+  .sub-head { font-weight: 600; font-size: .85rem; margin-top: .3rem; display: flex; align-items: center; }
+  label.inline { display: flex; align-items: center; gap: .4rem; }
+  .editor { border: 1px solid var(--line); border-radius: 8px; padding: .8rem; display: grid; gap: .6rem; background: #0b1016; }
+  .poolcard { border: 1px solid var(--line); border-radius: 8px; padding: .6rem .75rem; display: grid; gap: .45rem; background: #0b1016; margin-bottom: .6rem; }
+  .poolcard.ready { border-color: var(--accent-dim); }
+  .poolcard.failed { border-color: #6e2b27; }
+  .poolcard-head { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+  .poolcard-head button { padding: .2rem .6rem; font-size: .74rem; }
+  .poolcard table td, .poolcard table th { padding: .3rem .6rem; }
+  .scan-row input { max-width: 14rem !important; }
+  .missing { color: var(--bad); font-size: .75rem; }
   .footer { color: var(--muted); font-size: .78rem; text-align: center; margin-top: 1.5rem; }
   @media (max-width: 640px) {
     header { padding: 1rem; }
@@ -299,18 +310,54 @@
   </section>
 
   <section class="panel" id="poolPanel" hidden>
-    <div class="panel-head"><h2>Pooled GPUs</h2><span class="note" id="poolState">off</span></div>
+    <div class="panel-head"><h2>Models &amp; pools</h2><span class="note" id="poolState">loading…</span></div>
     <div class="pool-body">
-      <div class="hint" id="poolHint">Run one model across this computer and every friend's GPU. The model file only needs to be on this computer; each friend's laptop lends its GPU automatically when it has llama.cpp installed.</div>
+      <div class="hint">A <b>pool</b> runs one model across this computer and the GPUs workers lend. Each pool has its own model, workers, layer split, KV cache and request slots. A worker lends its GPU to one pool at a time. Model files only need to be on this computer (an external disk is fine).</div>
+      <div class="sub-head">Model library</div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Model</th><th>Size</th><th>File</th><th></th></tr></thead>
+        <tbody id="modelRows"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+      </table></div>
       <div class="pool-row">
-        <label style="display:flex;align-items:center;gap:.4rem">Model <select id="poolModel"><option value="">no model registered</option></select></label>
-        <label style="display:flex;align-items:center;gap:.4rem">Context <input id="poolContext" type="number" min="256" max="1048576" value="4096"></label>
-        <button id="poolStart" type="button">Start pool</button>
-        <button id="poolStop" class="secondary" type="button">Stop</button>
-        <span class="status-text" id="poolMsg"></span>
+        <label style="display:flex;align-items:center;gap:.4rem;flex:1;min-width:16rem">Folder <input id="scanDir" list="scanDirs" placeholder="/media/you/disk/models" style="flex:1;max-width:none"><datalist id="scanDirs"></datalist></label>
+        <label class="switch"><input type="checkbox" id="scanRemember" checked> remember</label>
+        <button type="button" id="scanBtn">Find models</button>
+        <span class="status-text" id="scanMsg"></span>
       </div>
-      <div class="hint" id="poolWorkers"></div>
-      <pre class="pool-log" id="poolLog" hidden></pre>
+      <div id="scanOut"></div>
+      <div id="jobOut" class="hint"></div>
+
+      <div class="sub-head">Pools <button type="button" class="secondary" id="poolNew" style="margin-left:.6rem;padding:.2rem .6rem;font-size:.75rem">New pool</button></div>
+      <div id="poolList"><div class="hint">No pool yet. Register a model, then create a pool.</div></div>
+
+      <div id="poolEditor" class="editor" hidden>
+        <div class="sub-head" id="edTitle">New pool</div>
+        <div class="pool-row">
+          <label class="inline">Name <input id="edName" placeholder="main" maxlength="32" style="max-width:9rem"></label>
+          <label class="inline">Model <select id="edModel"></select></label>
+          <label class="inline">Context <input id="edContext" type="number" min="256" max="1048576" value="4096"></label>
+          <label class="inline" title="Requests answered at the same time; the context is shared between them">Slots <input id="edParallel" type="number" min="1" max="64" value="1"></label>
+        </div>
+        <div class="hint">Workers (none ticked: this pool takes every lending worker no other pool names, if it is the first such pool)</div>
+        <div class="task-nodes" id="edWorkers"></div>
+        <div class="pool-row">
+          <label class="switch"><input type="checkbox" id="edHostGPU" checked> use this computer's GPU</label>
+          <label class="inline">Layer split <select id="edSplitMode"><option value="auto">automatic (by free memory)</option><option value="manual">manual weights</option></select></label>
+        </div>
+        <div class="task-nodes" id="edSplit" hidden></div>
+        <div class="pool-row">
+          <label class="inline">KV cache K <select id="edCtk"></select></label>
+          <label class="inline">V <select id="edCtv"></select></label>
+          <label class="switch" title="Keeps the KV cache in this computer's RAM: frees VRAM, but is slower"><input type="checkbox" id="edKVHost"> KV cache in host RAM</label>
+          <label class="inline">Flash attention <select id="edFA"><option value="">auto</option><option value="on">on</option><option value="off">off</option></select></label>
+        </div>
+        <div class="hint" id="edHint"></div>
+        <div class="pool-row">
+          <button type="button" id="edSave">Save and start</button>
+          <button type="button" class="secondary" id="edCancel">Cancel</button>
+          <span class="status-text" id="edMsg"></span>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -359,6 +406,7 @@
     <div class="form-grid">
       <label>Node<select id="node"><option value="">no ready node</option></select></label>
       <label>Model<select id="model"><option value="">—</option></select></label>
+      <label id="poolPick" hidden>Pool<select id="pool"><option value="">any ready pool</option></select></label>
       <label>Max tokens<input id="maxTokens" type="number" min="1" max="32768" value="128"></label>
       <label>Context<input id="context" type="number" min="1" max="1048576" value="2048"></label>
     </div>
@@ -407,6 +455,7 @@
 <script src="/static/xterm-addon-fit.js"></script>
 <script src="/static/tasks.js"></script>
 <script src="/static/fleet.js"></script>
+<script src="/static/pools.js"></script>
 <script>
 (function () {
   "use strict";
@@ -467,41 +516,8 @@
   }
   function shortName(name) { return name.indexOf("worker-") === 0 ? name.slice(0, 15) + "…" : name; }
 
-  function renderPool(data) {
-    var pool = localPool(data);
-    if (!pool) { $("poolPanel").hidden = true; return; }
-    $("poolPanel").hidden = false;
-    var state = pool.state + (pool.enabled && pool.model ? " · " + pool.model : "");
-    setText("poolState", state);
-    $("poolState").style.color = pool.state === "ready" ? "var(--accent)" : (pool.state === "failed" ? "var(--bad)" : "");
-    $("poolStop").disabled = !pool.enabled;
-    var lending = (pool.sharing || []).length, used = (pool.workers || []).length;
-    var text = lending + (lending === 1 ? " worker is" : " workers are") + " lending a GPU";
-    if (pool.enabled) text += " · " + used + " in use by the running model";
-    if (pool.detail) text += " — " + pool.detail;
-    setText("poolWorkers", text);
-    var log = (pool.log || []).join("\n");
-    $("poolLog").hidden = !pool.enabled || !log;
-    if (log && $("poolLog").textContent !== log) { $("poolLog").textContent = log; $("poolLog").scrollTop = $("poolLog").scrollHeight; }
-    if (pool.enabled && pool.model && !poolTouched) {
-      if (pool.model) $("poolModel").value = pool.model;
-      if (pool.context) $("poolContext").value = String(pool.context);
-    }
-  }
-  var poolTouched = false;
-  async function setPool(enabled) {
-    var body = { enabled: enabled, model: $("poolModel").value, context: Number($("poolContext").value) || 4096 };
-    if (enabled && !body.model) { setText("poolMsg", "register a model first: " + "meshcompute model add NAME /path/model.gguf"); return; }
-    setText("poolMsg", enabled ? "starting…" : "stopping…");
-    try {
-      var res = await post("/api/pool", body);
-      var out = await res.json().catch(function () { return {}; });
-      if (!res.ok) throw new Error(out.error || ("HTTP " + res.status));
-      setText("poolMsg", "");
-      poolTouched = false;
-      loadStatus();
-    } catch (err) { setText("poolMsg", "failed: " + err.message); }
-  }
+  // Pools are drawn by /static/pools.js.
+  function renderPool() {}
 
   function renderGPUs(data) {
     var rows = [];
@@ -559,11 +575,37 @@
     var status = (node && node.status) || {};
     var backend = status.backend || {};
     fillSelect($("model"), backend.models || [], "lfm3");
+    updatePools();
     if (backend.context) {
       $("context").max = String(backend.context);
       var current = Number($("context").value) || 2048;
       if (current > backend.context) $("context").value = String(backend.context);
     }
+  }
+
+  // The pool picker lists the ready pools serving the chosen model on the
+  // chosen computer; "any ready pool" lets the host take turns between them.
+  function updatePools() {
+    var data = window.__meshData;
+    var select = $("pool");
+    var previous = select.value;
+    var node = data && data.nodes.find(function (n) { return n.name === $("node").value; });
+    var pools = ((node && node.status && node.status.pools) || []).filter(function (p) {
+      return p.state === "ready" && p.model === $("model").value;
+    });
+    select.textContent = "";
+    var any = document.createElement("option");
+    any.value = "";
+    any.textContent = pools.length > 1 ? "any ready pool (take turns)" : "any ready pool";
+    select.appendChild(any);
+    pools.forEach(function (p) {
+      var option = document.createElement("option");
+      option.value = p.name;
+      option.textContent = p.name + " · " + (p.workers || []).length + " worker(s) · " + Math.max(p.parallel || 1, 1) + " slot(s)";
+      select.appendChild(option);
+    });
+    select.value = pools.some(function (p) { return p.name === previous; }) ? previous : "";
+    $("poolPick").hidden = pools.length === 0;
   }
 
   function renderControls(data) {
@@ -648,6 +690,7 @@
     $("stop").disabled = !running;
     $("node").disabled = running;
     $("model").disabled = running;
+    $("pool").disabled = running;
     $("output").classList.toggle("streaming", running);
   }
 
@@ -662,6 +705,7 @@
       max_tokens: Number($("maxTokens").value),
       context: Number($("context").value)
     };
+    if ($("pool").value) body.pool = $("pool").value;
     if (!body.prompt.trim()) { setText("runState", "prompt required"); return; }
     if (!(body.max_tokens > 0) || !(body.context > 0) || body.max_tokens >= body.context) {
       setText("runState", "max tokens must be less than context");
@@ -903,22 +947,17 @@
       }
       localTerminal = !!info.local_terminal; remoteTerminal = !!info.remote_terminal;
       if (info.models) {
-        var keep = $("poolModel").value;
-        fillSelect($("poolModel"), info.models, keep);
       }
       if (info.terminal && (localTerminal || remoteTerminal)) setupTerminal(info.cli || "meshcompute");
     } catch (_) {}
   }
 
-  $("poolStart").addEventListener("click", function () { setPool(true); });
-  $("poolStop").addEventListener("click", function () { setPool(false); });
-  $("poolModel").addEventListener("change", function () { poolTouched = true; });
-  $("poolContext").addEventListener("input", function () { poolTouched = true; });
   $("invite").addEventListener("click", makeInvite);
   $("refresh").addEventListener("click", loadStatus);
   $("run").addEventListener("click", runInference);
   $("stop").addEventListener("click", function () { if (controller) controller.abort(); });
   $("node").addEventListener("change", updateModels);
+  $("model").addEventListener("change", updatePools);
 
   loadStatus();
   loadInfo();

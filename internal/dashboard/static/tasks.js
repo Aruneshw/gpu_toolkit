@@ -59,7 +59,7 @@
     var box = $("taskNodes");
     if (!workers.length) { box.innerHTML = "<span class=\"hint\">No workers connected. Invite a friend first.</span>"; return; }
     var key = workers.map(function (n) { return n.name + (n.healthy ? 1 : 0) + (n.status && n.status.tasks); }).join("|");
-    if (box.dataset.key === key) return;
+    if (box.dataset.key === key && !window.__meshTickTask) return;
     box.dataset.key = key;
     box.textContent = "";
     workers.forEach(function (n) {
@@ -69,6 +69,7 @@
       input.value = n.name;
       var policy = n.status && n.status.tasks;
       input.disabled = !n.healthy || policy === "off";
+      if (window.__meshTickTask === n.name && !input.disabled) { checked[n.name] = true; window.__meshTickTask = null; }
       input.checked = !input.disabled && !!checked[n.name];
       input.addEventListener("change", function () { checked[n.name] = input.checked; });
       label.appendChild(input);

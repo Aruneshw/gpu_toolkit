@@ -51,11 +51,13 @@
     var cls = ms < 30 ? "good" : (ms < 120 ? "mid" : "bad");
     return "<span class=\"rtt " + cls + "\" title=\"round trip from the host through the encrypted link\">" + (ms < 10 ? ms.toFixed(1) : Math.round(ms)) + " ms</span>";
   }
-  function inPool(name) {
+  // Names of the ready pools a computer takes part in.
+  function poolsOf(name) {
     var host = (fleetData && fleetData.nodes || []).find(function (n) { return n.name === "local"; });
-    var pool = host && host.status && host.status.pool;
-    if (!pool || pool.state !== "ready") return false;
-    return name === "local" || (pool.workers || []).indexOf(name) >= 0;
+    var pools = (host && host.status && host.status.pools) || [];
+    return pools.filter(function (p) {
+      return p.state === "ready" && (name === "local" ? !(p.settings && p.settings.no_host_gpu) : (p.workers || []).indexOf(name) >= 0);
+    }).map(function (p) { return p.name; });
   }
 
   function card(n) {
@@ -74,7 +76,7 @@
     var h = "<div class=\"twin-head\"><span class=\"dot" + (n.healthy ? " ok" : "") + "\"></span><b title=\"" + esc(n.name) + "\">" + esc(name) + "</b>";
     h += rttBadge(n.rtt_ms);
     if (st.rpc_ready) h += "<span class=\"badge\">lending GPU</span>";
-    if (inPool(n.name)) h += "<span class=\"badge\">in pool</span>";
+    poolsOf(n.name).forEach(function (p) { h += "<span class=\"badge\">pool " + esc(p) + "</span>"; });
     h += "</div>";
     h += "<div class=\"gpu-name\">" + esc(gpus.length ? gpus.map(function (g) { return g.name; }).join(" + ") : "no NVIDIA GPU reported") + (res.os ? " · " + esc(res.os) : "") + "</div>";
     if (!n.healthy) {
@@ -420,6 +422,8 @@
       if (t.dataset.task) {
         var box = document.querySelector("#taskNodes input[value=\"" + t.dataset.task + "\"]");
         if (box && !box.disabled) { box.checked = true; box.dispatchEvent(new Event("change")); }
+        // The composer may not list this worker yet; it ticks it when it does.
+        else window.__meshTickTask = t.dataset.task;
         $("taskPanel").scrollIntoView({ behavior: "smooth", block: "start" });
         setTimeout(function () { $("taskCmd").focus(); }, 300);
       }

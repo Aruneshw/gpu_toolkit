@@ -10,7 +10,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
+	"sync"
 )
 
 const Version = 1
@@ -52,6 +55,119 @@ type Config struct {
 	// shared GPU; PoolContext is its context size.
 	PoolModel   string `json:"pool_model,omitempty"`
 	PoolContext int    `json:"pool_context,omitempty"`
+	// Pools are the host's pooled models; each runs its own llama-server
+	// over its own workers. PoolModel/PoolContext above are the older
+	// single-pool form and are read as a pool named "main".
+	Pools []PoolConfig `json:"pools,omitempty"`
+	// ModelDirs are folders (for example on an external disk) whose .gguf
+	// files the dashboard lists for registration.
+	ModelDirs []string `json:"model_dirs,omitempty"`
+}
+
+// PoolConfig is one pooled model and how it is spread.
+type PoolConfig struct {
+	// Name identifies the pool: lowercase letters, digits and dashes.
+	Name  string `json:"name"`
+	Model string `json:"model"`
+	// Enabled pools are kept running; a disabled one keeps its settings.
+	Enabled bool `json:"enabled"`
+	Context int  `json:"context,omitempty"`
+	// Parallel is the number of requests answered at once (llama.cpp
+	// slots); the context is shared between them. 0 means 1.
+	Parallel int `json:"parallel,omitempty"`
+	// Workers lists the workers whose GPUs this pool uses. Empty: every
+	// sharing worker no other pool claimed (the first such pool only).
+	Workers []string `json:"workers,omitempty"`
+	// NoHostGPU keeps the model off the host's own GPU(s).
+	NoHostGPU bool `json:"no_host_gpu,omitempty"`
+	// Split gives relative weights per computer ("local" is the host); a
+	// computer not listed gets 1, 0 gives it no layers. Empty: llama.cpp
+	// divides by free memory.
+	Split map[string]float64 `json:"split,omitempty"`
+	// CacheTypeK and CacheTypeV are the KV cache types (f16 when empty).
+	CacheTypeK string `json:"cache_type_k,omitempty"`
+	CacheTypeV string `json:"cache_type_v,omitempty"`
+	// KVOnHost keeps the KV cache in the host's RAM instead of on the GPUs.
+	KVOnHost bool `json:"kv_on_host,omitempty"`
+	// FlashAttn is auto (default), on or off.
+	FlashAttn string `json:"flash_attn,omitempty"`
+}
+
+var poolName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+
+// CacheTypes are the KV cache types llama.cpp accepts.
+var CacheTypes = []string{"f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"}
+
+// Validate checks one pool's settings.
+func (p PoolConfig) Validate() error {
+	if !poolName.MatchString(p.Name) {
+		return errors.New("pool name: 1-32 lowercase letters, digits or dashes")
+	}
+	if p.Model == "" || len(p.Model) > 64 {
+		return errors.New("pool model required")
+	}
+	if p.Context != 0 && (p.Context < 256 || p.Context > 1048576) {
+		return errors.New("context must be between 256 and 1048576")
+	}
+	if p.Parallel < 0 || p.Parallel > 64 {
+		return errors.New("parallel must be between 1 and 64")
+	}
+	if p.Parallel > 1 && p.Context != 0 && p.Context/p.Parallel < 128 {
+		return errors.New("each parallel slot needs at least 128 tokens of context")
+	}
+	if len(p.Workers) > 64 || len(p.Split) > 65 {
+		return errors.New("too many workers")
+	}
+	seen := map[string]bool{}
+	for _, w := range p.Workers {
+		if !strings.HasPrefix(w, "worker-") || len(w) > 100 || seen[w] {
+			return errors.New("pool workers must be distinct worker IDs")
+		}
+		seen[w] = true
+	}
+	positive := false
+	for node, wgt := range p.Split {
+		if node != "local" && (!strings.HasPrefix(node, "worker-") || len(node) > 100) {
+			return errors.New("split keys are local or worker IDs")
+		}
+		if wgt < 0 || wgt > 1000 || wgt != wgt {
+			return errors.New("split weights must be between 0 and 1000")
+		}
+		positive = positive || wgt > 0
+	}
+	if len(p.Split) > 0 && !positive {
+		return errors.New("at least one split weight must be above 0")
+	}
+	for _, t := range []string{p.CacheTypeK, p.CacheTypeV} {
+		if t == "" {
+			continue
+		}
+		ok := false
+		for _, c := range CacheTypes {
+			ok = ok || t == c
+		}
+		if !ok {
+			return errors.New("unknown KV cache type " + t)
+		}
+	}
+	switch p.FlashAttn {
+	case "", "auto", "on", "off":
+	default:
+		return errors.New("flash_attn must be auto, on or off")
+	}
+	return nil
+}
+
+// PoolList returns the configured pools, reading the older single-pool
+// fields as a pool named "main".
+func (c Config) PoolList() []PoolConfig {
+	if len(c.Pools) > 0 {
+		return append([]PoolConfig(nil), c.Pools...)
+	}
+	if c.PoolModel != "" {
+		return []PoolConfig{{Name: "main", Model: c.PoolModel, Context: c.PoolContext, Enabled: true}}
+	}
+	return nil
 }
 
 func Default() Config {
@@ -141,6 +257,31 @@ func (c Config) Validate() error {
 	if c.PoolContext < 0 || c.PoolContext > 1048576 {
 		return errors.New("invalid pool context")
 	}
+	if len(c.Pools) > 16 || len(c.ModelDirs) > 32 {
+		return errors.New("too many pools or model folders")
+	}
+	names := map[string]bool{}
+	claimed := map[string]string{}
+	for _, p := range c.Pools {
+		if err := p.Validate(); err != nil {
+			return fmt.Errorf("pool %q: %w", p.Name, err)
+		}
+		if names[p.Name] {
+			return fmt.Errorf("two pools are named %q", p.Name)
+		}
+		names[p.Name] = true
+		for _, w := range p.Workers {
+			if other, ok := claimed[w]; ok {
+				return fmt.Errorf("worker %s is in pools %q and %q; a worker lends its GPU to one pool", w[:min(len(w), 15)], other, p.Name)
+			}
+			claimed[w] = p.Name
+		}
+	}
+	for _, d := range c.ModelDirs {
+		if !filepath.IsAbs(d) || len(d) > 4096 {
+			return errors.New("model folders must be absolute paths")
+		}
+	}
 	seen := map[string]bool{}
 	for _, p := range c.Peers {
 		if p.Name == "" || p.Name == "local" || seen[p.Name] {
@@ -214,4 +355,22 @@ func Install(dir string) error {
 		return e
 	}
 	return Save(dir, Default())
+}
+
+var updateMu sync.Mutex
+
+// Update loads the configuration in dir, applies change and saves it, under
+// a lock shared by everything in this process (the agent saving pools and
+// the dashboard saving model folders must not overwrite each other).
+func Update(dir string, change func(*Config) error) (Config, error) {
+	updateMu.Lock()
+	defer updateMu.Unlock()
+	c, err := Load(dir)
+	if err != nil {
+		return c, err
+	}
+	if err := change(&c); err != nil {
+		return c, err
+	}
+	return c, Save(dir, c)
 }

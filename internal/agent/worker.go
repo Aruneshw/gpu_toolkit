@@ -107,17 +107,16 @@ func (a *Agent) UpdateSettings(s WorkerSettings) (WorkerSettings, error) {
 	default:
 		return a.Settings(), errors.New("task approval must be ask, auto or off")
 	}
-	c, err := config.Load(a.dir)
+	c, err := config.Update(a.dir, func(c *config.Config) error {
+		c.AllowTerminal, c.TaskApproval = s.AllowTerminal, s.TaskApproval
+		if s.ShareGPU {
+			c.ShareGPU = ""
+		} else {
+			c.ShareGPU = "off"
+		}
+		return nil
+	})
 	if err != nil {
-		return a.Settings(), err
-	}
-	c.AllowTerminal, c.TaskApproval = s.AllowTerminal, s.TaskApproval
-	if s.ShareGPU {
-		c.ShareGPU = ""
-	} else {
-		c.ShareGPU = "off"
-	}
-	if err := config.Save(a.dir, c); err != nil {
 		return a.Settings(), err
 	}
 	a.mu.Lock()

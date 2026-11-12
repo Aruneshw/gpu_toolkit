@@ -129,6 +129,37 @@ through the encrypted connection (cached there afterwards). That first load is
 as fast as your link: a direct mesh VPN or LAN is much faster than the public
 relay.
 
+### Pool controls
+
+- **Model library:** type a folder (for example your external HDD) under
+  *Models & pools*, or run `meshcompute model scan DIR`; every `.gguf` is listed
+  with its size and registered with one click.
+- **Several pools at once:** each pool has a name, a model and its own workers
+  (a worker lends its GPU to one pool). Two pools of the same model are
+  replicas: requests take turns between them, or name one with
+  `run --pool NAME` (dashboard: the *Pool* picker under *Run inference*).
+- **Layer split:** automatic by free memory, or weights per computer
+  (`--split local=1,WORKER=3`). The pool card shows how much of the model,
+  KV cache and compute buffers landed on each computer, read from
+  llama-server's own load log. If the host has no GPU llama.cpp can use, its
+  share is ignored and the card says so.
+- **KV cache and slots:** cache type (`--kv q8_0`, or `--kv-k`/`--kv-v`), keep
+  the cache in host RAM (`--kv-on-host`), flash attention (`--flash on`),
+  context size, and request slots (`--slots N`; each slot holds
+  context ÷ slots tokens). A request that finds every slot busy, or asks for
+  more context than a slot holds, is refused at once with that reason; it is
+  never queued or sent elsewhere.
+
+```sh
+meshcompute --home ~/.meshcompute-group pool start qwen --name fast --slots 2 \
+    --workers 0fa7,2b20 --split local=1,0fa7=1,2b20=2 --kv q8_0 --flash on
+meshcompute --home ~/.meshcompute-group pool start qwen --name spare --workers 2f5c --kv-on-host
+meshcompute --home ~/.meshcompute-group run qwen --pool spare --prompt "Hello"
+meshcompute --home ~/.meshcompute-group pool stop spare     # or: pool remove spare
+```
+
+Worker IDs can be shortened to any unique prefix.
+
 ## Terminal on a friend's laptop
 
 The friend decides. When joining from the menu they are asked *Allow a remote
@@ -199,7 +230,10 @@ controls, several pools, faster links, multi-hop) are in
   tunnel between two network namespaces (host on the VPN address, join,
   remote terminal); a live pool with the real llama.cpp b12182 CPU build (a
   worker's `ggml-rpc-server` held part of the model and answered through the
-  tunnel); Linux and real-Windows CI through `linux.sh`/`win.bat`;
+  tunnel); two named pools of one model at once over three workers with
+  their own split, KV cache and slot settings (`scripts/pool-test.sh`) and the
+  dashboard with five workers (`scripts/ui-test.sh`), both with real
+  llama.cpp; Linux and real-Windows CI through `linux.sh`/`win.bat`;
   live joins over IPv6 and through bore.pub. **Not yet established:** the pool
   on two physical GPUs, a running Tailscale client, and the Windows remote
   terminal on a physical PC. Details in
@@ -368,6 +402,8 @@ In a second terminal, on the same node:
 meshcompute run my-model --prompt "Hello" --max-tokens 128 --context 2048
 # or target an enrolled worker from the coordinator:
 meshcompute run my-model --node worker1 --prompt "Hello"
+# on a group host with several pools: pick one
+meshcompute run my-model --pool fast --prompt "Hello"
 ```
 
 `run --node auto` considers local first, then configured peers, and requires the
@@ -388,7 +424,8 @@ starts one too. It listens on `127.0.0.1` only and opens with a one-time token.
 - **Pooled GPUs:** pick a registered model, *Start pool*, and watch which
   laptops lend a GPU, the load state and llama-server's last log lines.
 - **Run inference:** pick a ready node and model (node *local* is the pool
-  when it is on), stream tokens back, stop at any time. Failures are reported
+  when it is on; with several pools, the *Pool* picker chooses one), stream
+  tokens back, stop at any time. Failures are reported
   and never retried elsewhere.
 - **Terminal:** a real shell (xterm.js on a pseudo-terminal) that survives
   page reloads. The computer list offers this computer and every laptop whose

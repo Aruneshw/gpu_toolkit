@@ -390,3 +390,34 @@ Notes: on loopback the measured round trip through the agent and tunnel is
 about 14 to 19 ms; that per-request overhead is the target of phase 4.
 Not run: the grid with a Windows worker (ConPTY), and a group larger than two
 workers (the session limit is now 24).
+
+## 2026-11-12: pool controls (phase 3)
+
+Environment: the same laptop (i5-13420H, RTX 3050, CPU-only llama.cpp b12119
+build, so the host itself offers no GPU device), Qwen2.5-0.5B-Instruct Q4_K_M.
+
+- `make verify` and `go test -race ./...` pass.
+- Browser (`LLAMA_DIR=... POOL_MODEL=... WORKERS=5 scripts/ui-test.sh`, host
+  plus five workers lending real `ggml-rpc-server`s): 56 checks pass. Folder
+  scan and one-click registration; a pool with two chosen workers, manual
+  split 1:1:3 (the weight-3 worker holds about 3x the weights of the weight-1
+  worker, read from llama-server's load log), q8_0 KV cache, flash attention,
+  2 slots; the run panel's *Pool* picker sends the run to that pool; an
+  unknown pool is refused with its name; stop.
+- Live pools (`scripts/pool-test.sh`, host plus three workers): 25 checks
+  pass. Two named pools of one model run at once, each on exactly its chosen
+  workers; `--device RPC0,RPC1 --tensor-split 1,2` (the host's `local=1` share
+  is ignored without a host GPU, and the pool says so); q8_0 KV and flash
+  attention on one, `--no-kv-offload` on the other; 3 parallel requests are
+  all answered and both replicas serve; 6 at once give 3 answers and 3
+  "every request slot ... is busy" refusals; `run --pool b` lands on pool b
+  every time; unknown pool and oversized context are refused with the
+  reason; no llama-server remains after `pool stop`, `pool remove` or SIGTERM
+  to the host.
+
+Fixed during these checks: the CLI and the dashboard replaced the agent's
+refusal reason with a generic message; requests could not name a pool; an
+ignored host split share was silent.
+Not run: the terminal on a Windows worker (Wine has no working ConPTY; the
+Windows CI jobs run the ConPTY and terminal tests), and pools on two physical
+GPUs.

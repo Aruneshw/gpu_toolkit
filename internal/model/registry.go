@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strings"
 )
 
 type Entry struct {
@@ -16,6 +18,10 @@ type Entry struct {
 	Path      string `json:"path"`
 	SHA256    string `json:"sha256"`
 	SizeBytes int64  `json:"size_bytes"`
+	// ModTime is the file's modification time (Unix nanoseconds) when it
+	// was hashed. While size and time are unchanged, Verify does not hash a
+	// multi-gigabyte file again on every start.
+	ModTime int64 `json:"mod_time,omitempty"`
 }
 
 var validName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
@@ -54,7 +60,7 @@ func inspect(path string) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
-	return Entry{Path: p, SHA256: hex.EncodeToString(h.Sum(nil)), SizeBytes: n + 4}, nil
+	return Entry{Path: p, SHA256: hex.EncodeToString(h.Sum(nil)), SizeBytes: n + 4, ModTime: st.ModTime().UnixNano()}, nil
 }
 func Add(dir, name, path string) (Entry, error) {
 	if !validName.MatchString(name) {
@@ -129,6 +135,11 @@ func List(dir string) ([]Entry, error) {
 	return result, nil
 }
 func Verify(e Entry) error {
+	if e.ModTime != 0 {
+		if st, err := os.Stat(e.Path); err == nil && st.Mode().IsRegular() && st.Size() == e.SizeBytes && st.ModTime().UnixNano() == e.ModTime {
+			return nil
+		}
+	}
 	actual, err := inspect(e.Path)
 	if err != nil {
 		return err
@@ -173,3 +184,123 @@ func (k KVInputs) KVBytes() (uint64, error) {
 	}
 	return n, nil
 }
+
+// Found is a GGUF model file found by Scan.
+type Found struct {
+	Path      string `json:"path"`
+	SizeBytes int64  `json:"size_bytes"`
+	// Parts is the number of files of a split model (Path is the first).
+	Parts int `json:"parts"`
+	// Suggested is an alias derived from the file name.
+	Suggested string `json:"suggested"`
+}
+
+var splitPart = regexp.MustCompile(`^(.*)-(\d{5})-of-(\d{5})\.gguf$`)
+
+// Scan lists .gguf files under dir, at most four folders deep. A model
+// split into parts (name-00001-of-00003.gguf) is listed once, by its first
+// part, with the size of all parts. Symbolic links to folders are not
+// followed. It stops after looking at 20000 entries.
+func Scan(dir string) ([]Found, error) {
+	root, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	st, err := os.Stat(root)
+	if err != nil {
+		return nil, err
+	}
+	if !st.IsDir() {
+		return nil, errors.New(root + " is not a folder")
+	}
+	type split struct {
+		first string
+		size  int64
+		parts int
+	}
+	splits := map[string]*split{}
+	var found []Found
+	seen := 0
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if path == root {
+				return err
+			}
+			return nil // unreadable folder: skip it
+		}
+		seen++
+		if seen > 20000 {
+			return filepath.SkipAll
+		}
+		if d.IsDir() {
+			rel, _ := filepath.Rel(root, path)
+			if rel != "." && (strings.Count(rel, string(filepath.Separator)) >= 4 || strings.HasPrefix(d.Name(), ".")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.EqualFold(filepath.Ext(path), ".gguf") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+			return nil
+		}
+		size := info.Size()
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Stat(path)
+			if err != nil || !target.Mode().IsRegular() {
+				return nil
+			}
+			size = target.Size()
+		}
+		if m := splitPart.FindStringSubmatch(filepath.Base(path)); m != nil {
+			key := filepath.Join(filepath.Dir(path), m[1]) + "/" + m[3]
+			sp := splits[key]
+			if sp == nil {
+				sp = &split{}
+				splits[key] = sp
+			}
+			sp.size += size
+			sp.parts++
+			if m[2] == "00001" {
+				sp.first = path
+			}
+			return nil
+		}
+		found = append(found, Found{Path: path, SizeBytes: size, Parts: 1, Suggested: Suggest(path)})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, sp := range splits {
+		if sp.first != "" {
+			found = append(found, Found{Path: sp.first, SizeBytes: sp.size, Parts: sp.parts, Suggested: Suggest(sp.first)})
+		}
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].Path < found[j].Path })
+	return found, nil
+}
+
+var notAlias = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
+
+// Suggest derives a valid model alias from a file name.
+func Suggest(path string) string {
+	name := filepath.Base(path)
+	if m := splitPart.FindStringSubmatch(name); m != nil {
+		name = m[1]
+	}
+	name = strings.TrimSuffix(strings.TrimSuffix(name, ".gguf"), ".GGUF")
+	name = strings.Trim(notAlias.ReplaceAllString(strings.ToLower(name), "-"), "-._")
+	if len(name) > 64 {
+		name = name[:64]
+	}
+	if !validName.MatchString(name) {
+		return "model"
+	}
+	return name
+}
+
+// ValidName reports whether name can be a model alias.
+func ValidName(name string) bool { return validName.MatchString(name) }

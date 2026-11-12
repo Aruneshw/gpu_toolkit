@@ -30,6 +30,9 @@ type Request struct {
 	Prompt    string `json:"prompt"`
 	MaxTokens int    `json:"max_tokens"`
 	Context   int    `json:"context"`
+	// Pool names the host pool to run on; empty takes turns over every
+	// ready pool serving Model.
+	Pool string `json:"pool,omitempty"`
 }
 type Response struct {
 	Content         string  `json:"content"`
@@ -149,7 +152,7 @@ func (l *Llama) Health(ctx context.Context) (Capabilities, error) {
 
 // ValidRequest reports whether a request is within the bounded input limits.
 func ValidRequest(r Request) bool {
-	return r.Model != "" && strings.TrimSpace(r.Prompt) != "" && len(r.Prompt) <= MaxPromptBytes && r.MaxTokens >= 1 && r.MaxTokens <= 32768 && r.Context >= 1 && r.Context <= 1048576 && r.MaxTokens < r.Context
+	return r.Model != "" && strings.TrimSpace(r.Prompt) != "" && len(r.Prompt) <= MaxPromptBytes && r.MaxTokens >= 1 && r.MaxTokens <= 32768 && r.Context >= 1 && r.Context <= 1048576 && r.MaxTokens < r.Context && len(r.Pool) <= 64 && !strings.ContainsAny(r.Pool, "\x00\r\n")
 }
 
 // admit validates the same invariants for streaming and non-streaming calls:

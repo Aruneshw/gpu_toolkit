@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -50,5 +51,67 @@ func TestStrictConfig(t *testing.T) {
 		if _, e := Load(d); e == nil {
 			t.Fatal("invalid config accepted")
 		}
+	}
+}
+
+func TestPoolValidation(t *testing.T) {
+	w1 := "worker-" + strings.Repeat("a", 64)
+	w2 := "worker-" + strings.Repeat("b", 64)
+	good := PoolConfig{Name: "big-1", Model: "qwen", Context: 4096, Parallel: 4, Workers: []string{w1}, Split: map[string]float64{"local": 1, w1: 3}, CacheTypeK: "q8_0", CacheTypeV: "q4_0", FlashAttn: "on"}
+	if err := good.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	bad := []PoolConfig{
+		{Name: "Big", Model: "m"},
+		{Name: "a", Model: ""},
+		{Name: "a", Model: "m", Context: 100},
+		{Name: "a", Model: "m", Parallel: 65},
+		{Name: "a", Model: "m", Context: 512, Parallel: 8},
+		{Name: "a", Model: "m", Workers: []string{w1, w1}},
+		{Name: "a", Model: "m", Workers: []string{"laptop"}},
+		{Name: "a", Model: "m", Split: map[string]float64{"local": 0}},
+		{Name: "a", Model: "m", Split: map[string]float64{"local": -1, w1: 2}},
+		{Name: "a", Model: "m", Split: map[string]float64{"elsewhere": 1}},
+		{Name: "a", Model: "m", CacheTypeK: "q2_k"},
+		{Name: "a", Model: "m", FlashAttn: "maybe"},
+	}
+	for _, p := range bad {
+		if p.Validate() == nil {
+			t.Errorf("accepted %+v", p)
+		}
+	}
+	c := Default()
+	c.Pools = []PoolConfig{{Name: "a", Model: "m", Workers: []string{w1}}, {Name: "b", Model: "m", Workers: []string{w2}}}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	c.Pools[1].Workers = []string{w1}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "one pool") {
+		t.Fatalf("a worker in two pools: %v", err)
+	}
+	c.Pools[1] = PoolConfig{Name: "a", Model: "m"}
+	if c.Validate() == nil {
+		t.Fatal("duplicate pool names accepted")
+	}
+	c.Pools = nil
+	c.ModelDirs = []string{"relative/dir"}
+	if c.Validate() == nil {
+		t.Fatal("relative model folder accepted")
+	}
+}
+
+func TestPoolListReadsOldSinglePool(t *testing.T) {
+	c := Default()
+	if c.PoolList() != nil {
+		t.Fatal("no pools expected")
+	}
+	c.PoolModel, c.PoolContext = "qwen", 2048
+	got := c.PoolList()
+	if len(got) != 1 || got[0].Name != "main" || got[0].Model != "qwen" || got[0].Context != 2048 || !got[0].Enabled {
+		t.Fatalf("%+v", got)
+	}
+	c.Pools = []PoolConfig{{Name: "x", Model: "y"}}
+	if got := c.PoolList(); len(got) != 1 || got[0].Name != "x" {
+		t.Fatalf("explicit pools must win: %+v", got)
 	}
 }

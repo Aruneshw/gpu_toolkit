@@ -247,3 +247,23 @@ func cpuLoad(stat string) *float64 {
 	p := float64(busy-pb) * 100 / float64(total-pt)
 	return &p
 }
+
+// Basic returns what can be read instantly, without running any program:
+// OS, CPU count, RAM (Linux) and disk. It stands in while full discovery
+// (nvidia-smi can take many seconds on a busy GPU) is still running.
+func Basic(ctx context.Context, path string) Snapshot {
+	s := Snapshot{OS: runtime.GOOS, Arch: runtime.GOARCH, CPU: "unknown", LogicalCPUs: runtime.NumCPU(), GPUs: []GPU{}, CollectedAt: time.Now().UTC(),
+		Issues: []string{"GPU discovery is still running (nvidia-smi is slow on this computer right now); GPU details follow shortly"}}
+	if runtime.GOOS == "linux" {
+		if b, e := os.ReadFile("/proc/meminfo"); e == nil {
+			s.RAMTotalBytes, s.RAMAvailableBytes = parseMeminfo(string(b))
+		}
+	}
+	if path == "" {
+		path = "."
+	}
+	if total, free, e := disk(ctx, path); e == nil {
+		s.DiskTotalBytes, s.DiskFreeBytes = &total, &free
+	}
+	return s
+}

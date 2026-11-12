@@ -58,14 +58,14 @@ func TestGenerateRejects(t *testing.T) {
 		overrides map[string]string
 		request   Request
 	}{
-		{"alias", nil, Request{"wrong", "hello", 8, 32}},
-		{"context", nil, Request{"tiny", "hello", 8, 4096}},
-		{"budget", nil, Request{"tiny", "hello", 8, 10}},
-		{"input", nil, Request{"tiny", strings.Repeat("x", MaxPromptBytes+1), 8, 32}},
-		{"models", map[string]string{"/v1/models": `{"data":[]}`}, Request{"tiny", "hello", 8, 32}},
-		{"notready", map[string]string{"/health": `{"status":"loading"}`}, Request{"tiny", "hello", 8, 32}},
-		{"malformed", map[string]string{"/props": "{"}, Request{"tiny", "hello", 8, 32}},
-		{"unknowncontext", map[string]string{"/props": "{}"}, Request{"tiny", "hello", 8, 32}},
+		{"alias", nil, Request{"wrong", "hello", 8, 32, ""}},
+		{"context", nil, Request{"tiny", "hello", 8, 4096, ""}},
+		{"budget", nil, Request{"tiny", "hello", 8, 10, ""}},
+		{"input", nil, Request{"tiny", strings.Repeat("x", MaxPromptBytes+1), 8, 32, ""}},
+		{"models", map[string]string{"/v1/models": `{"data":[]}`}, Request{"tiny", "hello", 8, 32, ""}},
+		{"notready", map[string]string{"/health": `{"status":"loading"}`}, Request{"tiny", "hello", 8, 32, ""}},
+		{"malformed", map[string]string{"/props": "{"}, Request{"tiny", "hello", 8, 32, ""}},
+		{"unknowncontext", map[string]string{"/props": "{}"}, Request{"tiny", "hello", 8, 32, ""}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			l, calls := fixture(t, tc.overrides)
@@ -92,7 +92,7 @@ func TestCanceled(t *testing.T) {
 	l, _ := fixture(t, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := l.Generate(ctx, Request{"tiny", "hello", 8, 32}); err == nil {
+	if _, err := l.Generate(ctx, Request{"tiny", "hello", 8, 32, ""}); err == nil {
 		t.Fatal("ignored cancellation")
 	}
 }
@@ -147,7 +147,7 @@ func TestGenerateStreamFixture(t *testing.T) {
 		`{"content":"","stop":true,"timings":{"predicted_per_second":7.5}}`,
 	)
 	var chunks []Chunk
-	err := l.GenerateStream(context.Background(), Request{"tiny", "hello", 8, 32}, func(c Chunk) error {
+	err := l.GenerateStream(context.Background(), Request{"tiny", "hello", 8, 32, ""}, func(c Chunk) error {
 		chunks = append(chunks, c)
 		return nil
 	})
@@ -176,7 +176,7 @@ func TestGenerateStreamFailures(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			l, calls, _ := streamFixture(t, tc.events...)
-			err := l.GenerateStream(context.Background(), Request{"tiny", "hello", 8, 32}, func(Chunk) error { return nil })
+			err := l.GenerateStream(context.Background(), Request{"tiny", "hello", 8, 32, ""}, func(Chunk) error { return nil })
 			if err == nil || !strings.Contains(err.Error(), tc.match) {
 				t.Fatalf("error %v", err)
 			}
@@ -193,7 +193,7 @@ func TestGenerateStreamEmitError(t *testing.T) {
 		`{"content":"two","stop":true,"timings":{"predicted_per_second":3}}`,
 	)
 	stop := errors.New("client gone")
-	err := l.GenerateStream(context.Background(), Request{"tiny", "hello", 8, 32}, func(Chunk) error { return stop })
+	err := l.GenerateStream(context.Background(), Request{"tiny", "hello", 8, 32, ""}, func(Chunk) error { return stop })
 	if !errors.Is(err, stop) {
 		t.Fatalf("error %v", err)
 	}
@@ -202,11 +202,11 @@ func TestGenerateStreamEmitError(t *testing.T) {
 func TestGenerateStreamRejects(t *testing.T) {
 	l, calls, streamed := streamFixture(t)
 	for _, request := range []Request{
-		{"", "hello", 8, 32},
-		{"tiny", " ", 8, 32},
-		{"tiny", "hello", 0, 32},
-		{"tiny", "hello", 8, 8},
-		{"tiny", strings.Repeat("x", MaxPromptBytes+1), 8, 32},
+		{"", "hello", 8, 32, ""},
+		{"tiny", " ", 8, 32, ""},
+		{"tiny", "hello", 0, 32, ""},
+		{"tiny", "hello", 8, 8, ""},
+		{"tiny", strings.Repeat("x", MaxPromptBytes+1), 8, 32, ""},
 	} {
 		if err := l.GenerateStream(context.Background(), request, func(Chunk) error { return nil }); err == nil {
 			t.Fatalf("accepted %+v", request)
@@ -221,7 +221,7 @@ func TestGenerateStreamCanceled(t *testing.T) {
 	l, calls, _ := streamFixture(t, `{"content":"x","stop":true,"timings":{"predicted_per_second":1}}`)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := l.GenerateStream(ctx, Request{"tiny", "hello", 8, 32}, func(Chunk) error { return nil }); err == nil {
+	if err := l.GenerateStream(ctx, Request{"tiny", "hello", 8, 32, ""}, func(Chunk) error { return nil }); err == nil {
 		t.Fatal("ignored cancellation")
 	}
 	if *calls != 0 {

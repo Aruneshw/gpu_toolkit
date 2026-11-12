@@ -29,8 +29,26 @@ import (
 // are not language models: the fake rpc-server echoes lines and the fake
 // llama-server proves it can reach every --rpc endpoint before serving HTTP.
 func TestMain(m *testing.M) {
+	if os.Getenv("MESHCOMPUTE_TEST_FAKE_NVIDIA") == "1" {
+		// A slow nvidia-smi, as on a laptop whose GPU is busy training.
+		time.Sleep(3 * time.Second)
+		fmt.Println("0, Slow GPU, 1024, 512, 5, 1.0, 40, 10, 50")
+		os.Exit(0)
+	}
 	if os.Getenv("MESHCOMPUTE_TEST_FAKE") == "1" {
 		args := strings.Join(os.Args[1:], " ")
+		if strings.Contains(args, "--list-devices") {
+			// MESHCOMPUTE_TEST_FAKE_GPUS simulates the host's own GPUs.
+			fmt.Println("Available devices:")
+			if gpus := os.Getenv("MESHCOMPUTE_TEST_FAKE_GPUS"); gpus != "" {
+				for _, g := range strings.Split(gpus, ",") {
+					fmt.Printf("  %s: Fake GPU (6144 MiB, 6000 MiB free)\n", g)
+				}
+			} else {
+				fmt.Println("  (none)")
+			}
+			os.Exit(0)
+		}
 		if strings.Contains(args, "--model") {
 			fakeLlamaServer(os.Args[1:])
 		} else {
@@ -104,6 +122,32 @@ func fakeLlamaServer(args []string) {
 	}
 	fmt.Printf("fake llama-server: %d rpc endpoint(s) verified\n", len(conns))
 	alias := flagValue(args, "--alias")
+	// Record the arguments, and report placement like the real program's
+	// load log: 100 MiB per unit of split weight on each RPC device.
+	if dir := os.Getenv("MESHCOMPUTE_TEST_ARGS_DIR"); dir != "" {
+		_ = os.WriteFile(filepath.Join(dir, "llama-"+flagValue(args, "--port")+".args"), []byte(strings.Join(args, "\n")), 0600)
+	}
+	weights := strings.Split(flagValue(args, "--tensor-split"), ",")
+	devices := strings.Split(flagValue(args, "--device"), ",")
+	fmt.Println("0.00.1 I load_tensors: offloaded 31/31 layers to GPU")
+	fmt.Println("0.00.1 I load_tensors:   CPU_Mapped model buffer size =    12.50 MiB")
+	rpcIndex := 0
+	for i, d := range devices {
+		if !strings.HasPrefix(d, "RPC") {
+			continue
+		}
+		mib := 100.0
+		if i < len(weights) && weights[0] != "" {
+			fmt.Sscanf(weights[i], "%g", &mib)
+			mib *= 100
+		}
+		list := strings.Split(flagValue(args, "--rpc"), ",")
+		if rpcIndex < len(list) {
+			fmt.Printf("0.00.2 I load_tensors: RPC0[%s] model buffer size = %8.2f MiB\n", list[rpcIndex], mib)
+			fmt.Printf("0.00.3 I llama_kv_cache: RPC0[%s] KV buffer size = %8.2f MiB\n", list[rpcIndex], mib/10)
+		}
+		rpcIndex++
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"status":"ok"}`) })
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintf(w, `{"data":[{"id":%q}]}`, alias) })
@@ -271,7 +315,7 @@ func TestPoolAndRemoteTerminalEndToEnd(t *testing.T) {
 	wait("the pooled model across the worker", 40*time.Second, func() bool {
 		return getJSON(t, client, local+"/v1/pool", nil, &pool) == 200 && pool.State == "ready" && len(pool.Workers) == 1 && pool.Workers[0] == id
 	})
-	if saved, err := config.Load(hostDir); err != nil || saved.PoolModel != "tiny" || saved.PoolContext != 512 {
+	if saved, err := config.Load(hostDir); err != nil || len(saved.Pools) != 1 || saved.Pools[0].Model != "tiny" || saved.Pools[0].Context != 512 || !saved.Pools[0].Enabled || saved.PoolModel != "" {
 		t.Fatalf("pool choice not remembered: %+v %v", saved, err)
 	}
 

@@ -144,7 +144,13 @@ func (a *Agent) serveStream(ctx context.Context, w http.ResponseWriter, r *http.
 			http.Error(w, "GPU sharing is not available on this worker", http.StatusServiceUnavailable)
 			return
 		}
+		// The RPC server restarts for a moment after a pool stops or
+		// reloads; the host's new llama-server may already be connecting.
 		addr, ready := rpc.Addr()
+		for wait := time.Now().Add(8 * time.Second); !ready && time.Now().Before(wait) && ctx.Err() == nil; {
+			time.Sleep(100 * time.Millisecond)
+			addr, ready = rpc.Addr()
+		}
 		if !ready {
 			http.Error(w, "the RPC server is not running", http.StatusServiceUnavailable)
 			return

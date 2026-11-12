@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -48,6 +49,9 @@ func request(ctx context.Context, cl *http.Client, endpoint, path string, body a
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
+		if why := backend.ErrorText(res); why != "" {
+			return fmt.Errorf("agent refused the request (HTTP %d): %s", res.StatusCode, why)
+		}
 		return fmt.Errorf("agent returned HTTP %d; check backend readiness, registered model, context and permissions; request was not retried", res.StatusCode)
 	}
 	b, e := io.ReadAll(io.LimitReader(res.Body, backend.MaxResponseBytes+1))
@@ -175,7 +179,14 @@ func operational(ctx context.Context, dir string, c config.Config, command strin
 			}
 			return writeJSON(out, entry)
 		}
-		return errors.New("usage: model add NAME LOCAL_GGUF_PATH | model list (downloads are not automatic)")
+		if len(args) == 2 && args[0] == "scan" {
+			found, e := model.Scan(args[1])
+			if e != nil {
+				return e
+			}
+			return writeJSON(out, found)
+		}
+		return errors.New("usage: model add NAME LOCAL_GGUF_PATH | model list | model scan DIR (downloads are not automatic)")
 	case "backend":
 		if len(args) == 1 && args[0] == "list" {
 			b, e := backend.New(c.BackendURL)
@@ -284,48 +295,171 @@ func operational(ctx context.Context, dir string, c config.Config, command strin
 
 // poolCommand controls the pooled model through this host's running agent.
 func poolCommand(ctx context.Context, dir string, c config.Config, args []string, out io.Writer) error {
-	const usage = "usage: pool start MODEL [--context 4096] | pool stop | pool status"
+	const usage = `usage: pool start MODEL [--name main] [--context 4096] [--slots 1] [--workers ID,ID]
+                  [--split local=1,ID=3] [--kv q8_0] [--kv-k TYPE] [--kv-v TYPE] [--kv-on-host]
+                  [--flash auto|on|off] [--no-host-gpu]
+       pool stop [NAME] | pool remove NAME | pool status`
 	if len(args) == 0 {
 		return errors.New(usage)
 	}
 	if !c.GroupHost {
-		return errors.New("the pool runs on the group host; start one with: meshcompute host")
+		return errors.New("pools run on the group host; start one with: meshcompute host")
 	}
 	cl, e := security.Client(dir)
 	if e != nil {
 		return e
 	}
 	defer cl.CloseIdleConnections()
+	bounded, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	var st agent.PoolsStatus
+	if e := request(bounded, cl, c.LocalEndpoint(), "/v1/pools", nil, &st); e != nil {
+		return fmt.Errorf("the group host is not running, or refused: %w", e)
+	}
+	find := func(name string) (config.PoolConfig, bool) {
+		for _, p := range st.Pools {
+			if p.Name == name || name == "" {
+				return p.Settings, true
+			}
+		}
+		return config.PoolConfig{}, false
+	}
 	var body any
 	switch args[0] {
 	case "status":
 		if len(args) != 1 {
 			return errors.New(usage)
 		}
+		return writeJSON(out, st)
 	case "stop":
-		if len(args) != 1 {
+		if len(args) > 2 {
 			return errors.New(usage)
 		}
-		body = map[string]any{"enabled": false}
+		name := ""
+		if len(args) == 2 {
+			name = args[1]
+		}
+		p, ok := find(name)
+		if !ok {
+			return errors.New("no such pool; see: meshcompute pool status")
+		}
+		p.Enabled = false
+		body = map[string]any{"action": "set", "pool": p}
+	case "remove":
+		if len(args) != 2 {
+			return errors.New(usage)
+		}
+		body = map[string]any{"action": "remove", "name": args[1]}
 	case "start":
-		if len(args) < 2 {
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
 			return errors.New(usage)
 		}
-		contextSize := agent.DefaultPoolContext
-		if e := flags("pool start", args[2:], func(f *flag.FlagSet) { f.IntVar(&contextSize, "context", contextSize, "context size") }); e != nil {
-			return e
+		p := config.PoolConfig{Name: agent.DefaultPoolName, Model: args[1], Enabled: true, Context: agent.DefaultPoolContext}
+		var workers, split, kv, kvK, kvV string
+		var noHost, kvHost bool
+		if e := flags("pool start", args[2:], func(f *flag.FlagSet) {
+			f.StringVar(&p.Name, "name", p.Name, "pool name")
+			f.IntVar(&p.Context, "context", p.Context, "context size")
+			f.IntVar(&p.Parallel, "slots", 0, "requests answered at once")
+			f.StringVar(&workers, "workers", "", "worker IDs or unique prefixes, comma-separated")
+			f.StringVar(&split, "split", "", "relative layer weights, e.g. local=1,worker-ab=3")
+			f.StringVar(&kv, "kv", "", "KV cache type for K and V")
+			f.StringVar(&kvK, "kv-k", "", "KV cache type for K")
+			f.StringVar(&kvV, "kv-v", "", "KV cache type for V")
+			f.BoolVar(&kvHost, "kv-on-host", false, "keep the KV cache in host RAM")
+			f.StringVar(&p.FlashAttn, "flash", "", "flash attention: auto, on or off")
+			f.BoolVar(&noHost, "no-host-gpu", false, "do not use this computer's GPU")
+		}); e != nil {
+			return fmt.Errorf("%w\n%s", e, usage)
 		}
-		body = map[string]any{"enabled": true, "model": args[1], "context": contextSize}
+		p.NoHostGPU, p.KVOnHost = noHost, kvHost
+		p.CacheTypeK, p.CacheTypeV = kv, kv
+		if kvK != "" {
+			p.CacheTypeK = kvK
+		}
+		if kvV != "" {
+			p.CacheTypeV = kvV
+		}
+		known := append([]string{}, st.Sharing...)
+		for _, pool := range st.Pools {
+			known = append(known, pool.Settings.Workers...)
+		}
+		for _, w := range splitList(workers) {
+			id, err := resolveWorker(w, known)
+			if err != nil {
+				return err
+			}
+			p.Workers = append(p.Workers, id)
+		}
+		if split != "" {
+			p.Split = map[string]float64{}
+			for _, part := range splitList(split) {
+				k, v, ok := strings.Cut(part, "=")
+				w, err := strconv.ParseFloat(v, 64)
+				if !ok || err != nil {
+					return errors.New("--split takes NODE=WEIGHT pairs, for example local=1,worker-ab=3")
+				}
+				if k != "local" {
+					if k, err = resolveWorker(k, known); err != nil {
+						return err
+					}
+				}
+				p.Split[k] = w
+			}
+		}
+		body = map[string]any{"action": "set", "pool": p}
 	default:
 		return errors.New(usage)
 	}
-	var st agent.PoolStatus
-	bounded, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	if e := request(bounded, cl, c.LocalEndpoint(), "/v1/pool", body, &st); e != nil {
-		return fmt.Errorf("the group host is not running, or refused: %w", e)
+	if e := request(bounded, cl, c.LocalEndpoint(), "/v1/pools", body, &st); e != nil {
+		return fmt.Errorf("refused: %w", e)
 	}
 	return writeJSON(out, st)
+}
+
+// admitRun checks that st can answer r now (see agent.CanServe).
+func admitRun(st agent.Status, statusErr error, r *backend.Request, explicitContext bool) string {
+	if statusErr != nil {
+		return "that computer's agent is not reachable: " + statusErr.Error()
+	}
+	return agent.CanServe(st, r, explicitContext)
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// resolveWorker expands a unique prefix (with or without "worker-") of a
+// known worker ID.
+func resolveWorker(prefix string, known []string) (string, error) {
+	if !strings.HasPrefix(prefix, "worker-") {
+		prefix = "worker-" + prefix
+	}
+	var match []string
+	seen := map[string]bool{}
+	for _, id := range known {
+		if strings.HasPrefix(id, prefix) && !seen[id] {
+			match = append(match, id)
+			seen[id] = true
+		}
+	}
+	switch len(match) {
+	case 1:
+		return match[0], nil
+	case 0:
+		if len(prefix) == 71 {
+			return prefix, nil // a full ID of a worker that is offline now
+		}
+		return "", fmt.Errorf("no lending worker starts with %s; see: meshcompute pool status", prefix)
+	default:
+		return "", fmt.Errorf("%s matches %d workers; type more of the ID", prefix, len(match))
+	}
 }
 
 func networkAdvice(q network.Quality) string {
@@ -341,15 +475,20 @@ func run(ctx context.Context, dir string, c config.Config, args []string, in io.
 	if len(args) == 0 {
 		return errors.New("usage: run MODEL [--node local|auto|PEER] [--prompt TEXT]")
 	}
-	r := backend.Request{Model: args[0], MaxTokens: 128, Context: 2048}
+	r := backend.Request{Model: args[0], MaxTokens: 128}
 	node := "local"
 	if e := flags("run", args[1:], func(f *flag.FlagSet) {
 		f.StringVar(&node, "node", node, "placement")
 		f.StringVar(&r.Prompt, "prompt", "", "prompt (stdin if absent)")
 		f.IntVar(&r.MaxTokens, "max-tokens", 128, "output cap")
-		f.IntVar(&r.Context, "context", 2048, "context budget")
+		f.IntVar(&r.Context, "context", 0, "context budget (default: up to 2048, within what the model's server allows)")
+		f.StringVar(&r.Pool, "pool", "", "run on this named pool of the host (default: take turns over every ready pool serving the model)")
 	}); e != nil {
 		return e
+	}
+	explicitContext := r.Context != 0
+	if !explicitContext {
+		r.Context = 2048
 	}
 	if r.Prompt == "" {
 		b, e := io.ReadAll(io.LimitReader(in, backend.MaxPromptBytes+1))
@@ -387,12 +526,12 @@ func run(ctx context.Context, dir string, c config.Config, args []string, in io.
 		bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 		e = request(bounded, cl, endpoint, "/v1/status", nil, &st)
 		cancel()
-		ready := e == nil && !st.Busy && st.BackendReady && st.Backend != nil && len(st.Backend.Models) == 1 && st.Backend.Models[0] == r.Model && st.Backend.Context >= r.Context
-		if !ready {
+		why := admitRun(st, e, &r, explicitContext)
+		if why != "" {
 			if node == "auto" {
 				continue
 			}
-			return errors.New("selected agent/model is not ready or context exceeds capacity; start agent and matching backend")
+			return errors.New(why)
 		}
 		advice := "Local execution"
 		if name != "local" {

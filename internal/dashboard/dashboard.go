@@ -172,6 +172,9 @@ func readJSON(ctx context.Context, cl *http.Client, endpoint, path string, body,
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
+		if why := backend.ErrorText(res); why != "" {
+			return fmt.Errorf("agent returned HTTP %d: %s", res.StatusCode, why)
+		}
 		return fmt.Errorf("agent returned HTTP %d", res.StatusCode)
 	}
 	b, err := io.ReadAll(io.LimitReader(res.Body, backend.MaxResponseBytes+1))
@@ -238,14 +241,16 @@ func (r *Remote) Stream(ctx context.Context, name string, req backend.Request, e
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 	err = readJSON(bounded, cl, endpoint, "/v1/status", nil, &st)
 	cancel()
-	ready := err == nil && !st.Busy && st.BackendReady && st.Backend != nil && len(st.Backend.Models) == 1 && st.Backend.Models[0] == req.Model && st.Backend.Context >= req.Context
-	if !ready {
-		return errors.New("selected node is not ready for this model and context")
+	if err != nil {
+		return refuse("selected node is not reachable")
+	}
+	if why := agent.CanServe(st, &req, true); why != "" {
+		return refuse(why)
 	}
 	if name != "local" {
 		q, err := network.Measure(ctx, cl, endpoint)
 		if err != nil || !q.Available || !q.Stable {
-			return errors.New("remote network failed admission; no inference started")
+			return refuse("remote network failed admission; no inference started")
 		}
 	}
 	var data []byte
@@ -265,6 +270,9 @@ func (r *Remote) Stream(ctx context.Context, name string, req backend.Request, e
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
+		if why := backend.ErrorText(res); why != "" {
+			return refuse(why)
+		}
 		return fmt.Errorf("agent stream returned HTTP %d", res.StatusCode)
 	}
 	return sse.Read(res.Body, func(event string, data []byte) error {
@@ -292,6 +300,14 @@ func (r *Remote) Stream(ctx context.Context, name string, req backend.Request, e
 			}
 			return sse.Done
 		case "error":
+			// The agent sends agent.Reason: an admission reason or a
+			// generic failure, never backend internals.
+			var v struct {
+				Error string `json:"error"`
+			}
+			if json.Unmarshal(data, &v) == nil && v.Error != "" && len(v.Error) <= 300 {
+				return refuse(v.Error)
+			}
 			return errors.New("remote inference failed")
 		default:
 			return nil
@@ -370,6 +386,7 @@ type Server struct {
 	tasks  tasks
 	worker WorkerConsole
 	fleet  fleet
+	lib    library
 }
 
 func New(cluster Cluster, listen, token string) (*Server, error) {
@@ -525,6 +542,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/run", s.handleRun)
 	s.toolRoutes(mux)
 	s.fleetRoutes(mux)
+	s.modelRoutes(mux)
 	return mux
 }
 
@@ -573,9 +591,22 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return sw.Event("token", map[string]any{"content": c.Content})
 	})
 	if err != nil {
-		_ = sw.Event("error", map[string]string{"error": "inference failed; verify node readiness, model, context and worker availability; no retry performed"})
+		message := "inference failed; verify node readiness, model, context and worker availability; no retry performed"
+		var why refusal
+		if errors.As(err, &why) {
+			message = why.Error()
+		}
+		_ = sw.Event("error", map[string]string{"error": message})
 	}
 }
+
+// refusal is a reason a run was declined or failed that MeshCompute itself
+// wrote for people (no free slot, unknown pool, context too large, the
+// agent's own sanitized error), so the page may show it. Other errors stay
+// generic.
+type refusal struct{ error }
+
+func refuse(message string) error { return refusal{errors.New(message)} }
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")

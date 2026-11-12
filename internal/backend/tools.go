@@ -208,10 +208,16 @@ func (s *RPCServer) Run(ctx context.Context) {
 			cache = false // retry without the optional flag
 			continue
 		}
-		if wasReady && time.Since(started) > time.Minute {
+		switch {
+		case wasReady && time.Since(started) > 2*time.Second:
+			// It served, then exited: ggml-rpc-server does that when the
+			// host's llama-server goes away mid-computation (a pool stops
+			// or reloads). Come back at once so the next load finds it.
+			delay = 250 * time.Millisecond
+		case delay < 250*time.Millisecond:
 			delay = time.Second
-		} else if delay < 30*time.Second {
-			delay *= 2
+		case delay < 30*time.Second:
+			delay *= 2 // failing to start, or crashing right away: back off
 		}
 		fmt.Fprintf(s.Log, "rpc-server stopped (%v); restarting in %s\n", err, delay)
 		select {

@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const [hostURL, workerURL, outDir] = process.argv.slice(2);
+// How many workers the host has (scripts/ui-test.sh starts them).
+const N = Number(process.env.EXPECT_WORKERS || 2);
 const port = 9333 + Math.floor(Math.random() * 500);
 const profile = mkdtempSync(join(outDir, "chrome-"));
 const chromeBin = process.env.CHROME || "google-chrome";
@@ -97,9 +99,9 @@ try {
   await waitFor("host page loaded", "document.readyState === 'complete' && !!document.getElementById('fleet')");
 
   // ---- fleet ----
-  const cards = await waitFor("fleet shows 3 computers", "document.querySelectorAll('#fleet .twin').length === 3 && document.querySelectorAll('#fleet .twin').length");
-  check(cards === 3, "three fleet cards", cards);
-  const rtts = await waitFor("both workers show a round trip", "Array.from(document.querySelectorAll('#fleet .rtt')).map(e => e.textContent).length >= 2 && Array.from(document.querySelectorAll('#fleet .rtt')).map(e => e.textContent)");
+  const cards = await waitFor(`fleet shows ${N + 1} computers`, `document.querySelectorAll('#fleet .twin').length === ${N + 1} && document.querySelectorAll('#fleet .twin').length`, 30000);
+  check(cards === N + 1, "one fleet card per computer", cards);
+  const rtts = await waitFor("every worker shows a round trip", `Array.from(document.querySelectorAll('#fleet .rtt')).length >= ${N} && Array.from(document.querySelectorAll('#fleet .rtt')).map(e => e.textContent)`, 20000);
   check(Array.isArray(rtts) && rtts.every((t) => / ms$/.test(t)), "round-trip badges in ms", rtts);
   const meters = await evaluate("document.querySelector('#fleet .twin').innerText");
   check(/GPU/.test(meters) && /VRAM/.test(meters) && /Temp/.test(meters) && /Power/.test(meters) && /CPU/.test(meters) && /RAM/.test(meters), "host card shows GPU, VRAM, Temp, Power, CPU, RAM", meters);
@@ -107,12 +109,12 @@ try {
   await waitFor("sparklines draw after a few samples", "document.querySelectorAll('#fleet svg.spark path').length >= 3", 12000);
 
   // ---- terminal grid ----
-  await waitFor("grid panel visible with two worker panes", "!document.getElementById('gridPanel').hidden && document.querySelectorAll('#grid .pane').length === 2");
+  await waitFor(`grid panel visible with ${N} worker panes`, `!document.getElementById('gridPanel').hidden && document.querySelectorAll('#grid .pane').length === ${N}`);
   // xterm.js only draws terminals that are on screen, like a real user scrolling there.
   await evaluate("document.getElementById('gridPanel').scrollIntoView({block: 'start'}), true");
   await evaluate("document.getElementById('gridConnect').click(), true");
-  await waitFor("both panes connected", "Array.from(document.querySelectorAll('#grid .pane .status-text')).every(e => e.textContent === 'connected')");
-  await waitFor("both panes show a shell prompt", `${paneText(0)}.trim().length > 0 && ${paneText(1)}.trim().length > 0`);
+  await waitFor("every pane connected", "Array.from(document.querySelectorAll('#grid .pane .status-text')).every(e => e.textContent === 'connected')");
+  await waitFor("every pane shows a shell prompt", `Array.from(document.querySelectorAll('#grid .pane .xterm-rows')).filter(r => r.innerText.trim().length > 0).length === ${N}`);
   await focusPane(1);
   await typeText("echo only-pane-$((40+2))\r");
   await waitFor("pane 2 runs the command typed into it", `${paneText(1)}.includes('only-pane-42')`);
@@ -121,24 +123,23 @@ try {
   await evaluate("document.getElementById('gridBroadcast').click(), true");
   await focusPane(0);
   await typeText("echo bcast-$((7*6))\r");
-  await waitFor("type-into-all reaches pane 1", `${paneText(0)}.includes('bcast-42')`);
-  await waitFor("type-into-all reaches pane 2", `${paneText(1)}.includes('bcast-42')`);
+  await waitFor(`type-into-all reaches all ${N} panes`, `Array.from(document.querySelectorAll('#grid .pane .xterm-rows')).filter(r => r.innerText.includes('bcast-42')).length === ${N}`);
   await evaluate("document.getElementById('gridBroadcast').click(), true");
   // Which computer is each pane on? Each shell reports the parent process's state directory.
-  await focusPane(0);
-  await typeText("ps -o args= -p $PPID | grep -o -- '--home [^ ]*' | sed 's#.*/#home-is-#'\r");
-  await focusPane(1);
-  await typeText("ps -o args= -p $PPID | grep -o -- '--home [^ ]*' | sed 's#.*/#home-is-#'\r");
-  const p0 = await waitFor("pane 1 names its worker", `(${paneText(0)}.match(/home-is-(W2?)\\b/) || [])[1]`);
-  const p1 = await waitFor("pane 2 names its worker", `(${paneText(1)}.match(/home-is-(W2?)\\b/) || [])[1]`);
-  check(p0 && p1 && p0 !== p1, "the two panes run on two different workers", [p0, p1]);
+  const homes = [];
+  for (let i = 0; i < N; i++) {
+    await focusPane(i);
+    await typeText("ps -o args= -p $PPID | grep -o -- '--home [^ ]*' | sed 's#.*/#home-is-#'\r");
+    homes.push(await waitFor(`pane ${i + 1} names its worker`, `(${paneText(i)}.match(/home-is-(W[0-9]*)\\b/) || [])[1]`));
+  }
+  check(new Set(homes).size === N && homes.every(Boolean), `the ${N} panes run on ${N} different workers`, homes);
   // Each worker card's terminal count must match the server's session list.
   const terms = await waitFor("fleet cards count the open terminals", `(async () => {
     const list = (await (await fetch('/api/term/list')).json()).sessions;
     const want = {};
     list.forEach(s => { want[s.node] = (want[s.node] || 0) + 1; });
     const cards = Array.from(document.querySelectorAll('#fleet .twin')).filter(c => c.id !== 'twin-local');
-    return cards.length === 2 && cards.every(c => {
+    return cards.length === ${N} && cards.every(c => {
       const n = want[c.id.slice(5)] || 0;
       const items = c.querySelector('.twin-foot span').innerText.split(' · ');
       return n >= 1 && items.includes(n + (n === 1 ? ' terminal open' : ' terminals open'));
@@ -150,17 +151,17 @@ try {
   // ---- reload: panes re-attach with their scrollback ----
   await send("Page.reload");
   await sleep(1500);
-  await waitFor("grid panel visible after reload", "!document.getElementById('gridPanel').hidden && document.querySelectorAll('#grid .pane').length === 2");
+  await waitFor("grid panel visible after reload", `!document.getElementById('gridPanel').hidden && document.querySelectorAll('#grid .pane').length === ${N}`);
   await evaluate("document.getElementById('gridPanel').scrollIntoView({block: 'start'}), true");
-  await waitFor("after reload both panes are connected again", "document.querySelectorAll('#grid .pane').length === 2 && Array.from(document.querySelectorAll('#grid .pane .status-text')).every(e => e.textContent === 'connected')");
+  await waitFor("after reload every pane is connected again", `document.querySelectorAll('#grid .pane').length === ${N} && ` + "Array.from(document.querySelectorAll('#grid .pane .status-text')).every(e => e.textContent === 'connected')");
   await waitFor("after reload pane 2 replays its earlier output", `${paneText(1)}.includes('only-pane-42')`);
 
   // ---- task from a fleet card's button ----
   const target = await evaluate("Array.from(document.querySelectorAll('#fleet button[data-task]')).map(b => b.dataset.task)");
-  check(Array.isArray(target) && target.length === 2, "both worker cards offer Send task", target);
+  check(Array.isArray(target) && target.length === N, "every worker card offers Send task", target);
   const auto = await evaluate("(() => { const n = (window.__meshData.nodes || []).find(n => n.status && n.status.tasks === 'auto'); return n && n.name; })()");
   await evaluate(`document.querySelector('#fleet button[data-task="${auto}"]').click(), true`);
-  await waitFor("Send task ticks that worker in the composer", `document.querySelector('#taskNodes input[value="${auto}"]').checked`);
+  await waitFor("Send task ticks that worker in the composer", `!!document.querySelector('#taskNodes input[value="${auto}"]')?.checked`);
   await evaluate("document.getElementById('taskCmd').value = 'echo task-from-ui-$((1+1)); uname -s', true");
   await evaluate("document.getElementById('taskSend').click(), true");
   await waitFor("task succeeds on the auto worker", "Array.from(document.querySelectorAll('#taskList .task')).some(t => /succeeded/.test(t.innerText) && /task-from-ui-2/.test(t.innerText) && /Linux/.test(t.innerText))", 20000);
@@ -170,6 +171,65 @@ try {
     return tasks.length >= 1 && card.querySelector('.twin-foot span').innerText.split(' · ').includes(tasks.length + ' finished');
   })()`, 8000);
   await shot("host-full.png");
+
+  // ---- models & pools (only with real llama.cpp) ----
+  if (process.env.POOL_MODEL) {
+    const modelDir = process.env.POOL_MODEL.replace(/[\\/][^\\/]*$/, "");
+    await waitFor("models & pools panel visible", "!document.getElementById('poolPanel').hidden");
+    await evaluate("document.getElementById('poolPanel').scrollIntoView(), true");
+    await evaluate(`(() => { const d = document.getElementById('scanDir'); d.value = ${JSON.stringify(modelDir)}; document.getElementById('scanBtn').click(); return true; })()`);
+    await waitFor("the folder scan lists the model", "document.querySelectorAll('#scanOut button[data-add]').length >= 1");
+    await evaluate("(() => { const i = document.querySelector('#scanOut input[data-name]'); i.value = 'uimodel'; document.querySelector('#scanOut button[data-add]').click(); return true; })()");
+    await waitFor("the model is registered from the page", "Array.from(document.querySelectorAll('#modelRows b')).some(b => b.textContent === 'uimodel')", 60000);
+    await waitFor("workers lend their GPUs", `document.getElementById('poolState').textContent.includes('${N} worker(s) lending')`, 30000);
+    await evaluate("document.getElementById('poolNew').click(), true");
+    await waitFor("pool editor opens", "!document.getElementById('poolEditor').hidden && document.querySelectorAll('#edWorkers input').length === " + N);
+    await evaluate(`(() => {
+      const $ = id => document.getElementById(id);
+      $('edName').value = 'ui'; $('edName').dispatchEvent(new Event('input'));
+      $('edModel').value = 'uimodel';
+      $('edContext').value = 2048; $('edParallel').value = 2;
+      const boxes = document.querySelectorAll('#edWorkers input');
+      boxes[0].checked = true; boxes[1].checked = true; boxes[0].dispatchEvent(new Event('change', { bubbles: true }));
+      $('edSplitMode').value = 'manual'; $('edSplitMode').dispatchEvent(new Event('change'));
+      const w = document.querySelectorAll('#edSplit input');
+      w[0].value = 1; w[1].value = 1; w[2].value = 3;
+      $('edCtk').value = 'q8_0'; $('edCtv').value = 'q8_0'; $('edFA').value = 'on';
+      window.__heavy = boxes[1].value; window.__light = boxes[0].value;
+      $('edSave').click();
+      return w.length;
+    })()`);
+    await waitFor("the pool is ready", "(() => { const c = document.querySelector('.poolcard[data-pool=\"ui\"]'); return c && /ready/.test(c.querySelector('.poolcard-head').innerText); })()", 120000);
+    const table = await waitFor("the memory table shows this computer and two workers", "(() => { const rows = Array.from(document.querySelectorAll('.poolcard[data-pool=\"ui\"] tbody tr')).map(r => Array.from(r.cells).map(c => c.innerText)); return rows.length === 3 && rows; })()", 30000);
+    if (Array.isArray(table)) {
+      const mibOf = (r) => parseFloat(r[2]) * (/GiB/.test(r[2]) ? 1024 : 1);
+      // llama.cpp splits whole layers and puts the output layer last, so
+      // weights 1:3 give roughly, not exactly, 3x.
+      const heavy = (await evaluate("window.__heavy")).slice(0, 15), light = (await evaluate("window.__light")).slice(0, 15);
+      const row = (id) => table.find(r => r[0].startsWith(id));
+      const ratio = row(heavy) && row(light) ? mibOf(row(heavy)) / mibOf(row(light)) : 0;
+      check(ratio > 2.5 && ratio < 4.5, "the worker with weight 3 holds about 3x the weights of the one with weight 1", { ratio, table });
+      check(table.every(r => r[2] !== "—"), "every computer holds weights", table);
+    }
+    check(/q8_0\/q8_0/.test(await evaluate("document.querySelector('.poolcard[data-pool=\"ui\"]').innerText")), "the card shows the q8_0 KV cache");
+    await waitFor("two worker cards carry the pool badge", "Array.from(document.querySelectorAll('#fleet .twin')).filter(c => /pool ui/.test(c.innerText) && c.id !== 'twin-local').length === 2", 15000);
+    // Prompt it from the Run panel.
+    await waitFor("the run panel offers the pooled model", "Array.from(document.getElementById('model').options).some(o => o.value === 'uimodel')", 15000);
+    await evaluate("(() => { const $ = id => document.getElementById(id); $('node').value = 'local'; $('node').dispatchEvent(new Event('change')); $('model').value = 'uimodel'; $('model').dispatchEvent(new Event('change')); return true; })()");
+    await waitFor("the run panel offers pool ui", "!document.getElementById('poolPick').hidden && Array.from(document.getElementById('pool').options).some(o => o.value === 'ui')", 15000);
+    // Remember what the page sends, then run on the chosen pool.
+    await evaluate(`(() => { const f = window.fetch; window.__runBodies = []; window.fetch = (u, o) => { if (u === '/api/run') window.__runBodies.push(JSON.parse(o.body)); return f(u, o); }; return true; })()`);
+    await evaluate("(() => { const $ = id => document.getElementById(id); $('pool').value = 'ui'; $('context').value = 1024; $('maxTokens').value = 12; $('prompt').value = 'The capital of France is'; $('run').click(); return true; })()");
+    await waitFor("the pooled model answers in the page", "document.getElementById('output').textContent.trim().length > 3", 60000);
+    check(await evaluate("window.__runBodies.length === 1 && window.__runBodies[0].pool === 'ui'"), "the run went to the chosen pool", await evaluate("window.__runBodies"));
+    await waitFor("run panel idle again", "!document.getElementById('run').disabled", 30000);
+    const unknown = await evaluate(`fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node: 'local', model: 'uimodel', pool: 'nope', prompt: 'hi', max_tokens: 4, context: 512 }) }).then(r => r.text())`);
+    check(/no pool named nope/.test(unknown), "an unknown pool is refused with its name", unknown);
+    // Stop it.
+    await evaluate("Array.from(document.querySelectorAll('.poolcard[data-pool=\"ui\"] button')).find(b => b.textContent === 'Stop').click(), true");
+    await waitFor("the pool stops", "(() => { const c = document.querySelector('.poolcard[data-pool=\"ui\"]'); return c && /stopped/.test(c.querySelector('.poolcard-head').innerText); })()", 20000);
+    await shot("host-pools.png");
+  }
 
   // ---- worker dashboard: approve with a click ----
   const ask = await evaluate("(() => { const n = (window.__meshData.nodes || []).find(n => n.status && n.status.tasks === 'ask'); return n && n.name; })()");

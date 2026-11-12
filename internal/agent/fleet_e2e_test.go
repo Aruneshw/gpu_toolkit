@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"meshcompute/internal/agent"
 	"meshcompute/internal/config"
@@ -18,6 +19,39 @@ import (
 	"testing"
 	"time"
 )
+
+// Shell helpers: Linux workers run /bin/sh, Windows workers cmd.exe in a
+// pseudo-console. printed(text, n) is a command whose output contains
+// text+n only if the shell executed it (the typed line itself does not).
+func useTestShell(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Setenv("MESHCOMPUTE_SHELL", "cmd.exe")
+	} else {
+		t.Setenv("SHELL", "/bin/sh")
+	}
+}
+
+func line(cmd string) string {
+	if runtime.GOOS == "windows" {
+		return cmd + "\r"
+	}
+	return cmd + "\n"
+}
+
+func printed(text string, n int) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf("echo %s%%PROCESSOR_ARCHITECTURE:~0,0%%%d", text, n)
+	}
+	return fmt.Sprintf("echo %s$((%d+0))", text, n)
+}
+
+func sleepTask() (cmd, shell string) {
+	if runtime.GOOS == "windows" {
+		return "Start-Sleep -Seconds 20", "powershell"
+	}
+	return "sleep 20", "sh"
+}
 
 type testWorker struct {
 	dir string
@@ -58,10 +92,7 @@ func joinWorker(t *testing.T, ctx context.Context, hostDir string, hc config.Con
 // worker, input typed into worker A's pane reaches only worker A, "type into
 // all" reaches both, and all output arrives over one multiplexed stream.
 func TestFleetAndTerminalGridEndToEnd(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("remote shells in this test use the Linux pseudo-terminal")
-	}
-	t.Setenv("SHELL", "/bin/sh")
+	useTestShell(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	hostDir := filepath.Join(t.TempDir(), "host")
@@ -135,7 +166,8 @@ func TestFleetAndTerminalGridEndToEnd(t *testing.T) {
 	var sent struct {
 		Tasks []struct{ ID string } `json:"tasks"`
 	}
-	if code := host.do("POST", "/api/tasks", map[string]any{"nodes": []string{wa.id}, "command": "sleep 20", "shell": "sh"}, &sent); code != 200 {
+	sleepCmd, sleepShell := sleepTask()
+	if code := host.do("POST", "/api/tasks", map[string]any{"nodes": []string{wa.id}, "command": sleepCmd, "shell": sleepShell}, &sent); code != 200 {
 		t.Fatalf("send: %d", code)
 	}
 	waitFleet("the running task on worker A's card", func(f dashboard.FleetResponse) bool {
@@ -225,8 +257,9 @@ func TestFleetAndTerminalGridEndToEnd(t *testing.T) {
 			t.Fatalf("input %v: HTTP %d", body, code)
 		}
 	}
-	input(map[string]any{"ids": []string{ida, idb}, "data": "echo both-$((20+22))\n"})
-	input(map[string]any{"id": ida, "data": "echo only-on-a; exit 5\n"})
+	input(map[string]any{"ids": []string{ida, idb}, "data": line(printed("both-", 42))})
+	input(map[string]any{"id": ida, "data": line(printed("only-on-a-", 1))})
+	input(map[string]any{"id": ida, "data": line("exit 5")})
 	// Worker A's shell ends; worker B's must still be open.
 	deadline = time.Now().Add(10 * time.Second)
 	for {
@@ -248,7 +281,8 @@ func TestFleetAndTerminalGridEndToEnd(t *testing.T) {
 	if wb.a.TerminalCount() != 1 {
 		t.Fatalf("worker B lost its shell: %d", wb.a.TerminalCount())
 	}
-	input(map[string]any{"id": idb, "data": "echo only-on-b; exit 6\n"})
+	input(map[string]any{"id": idb, "data": line(printed("only-on-b-", 2))})
+	input(map[string]any{"id": idb, "data": line("exit 6")})
 	select {
 	case <-ended:
 	case <-time.After(15 * time.Second):
@@ -263,7 +297,212 @@ func TestFleetAndTerminalGridEndToEnd(t *testing.T) {
 	if !strings.Contains(a, "both-42") || !strings.Contains(b, "both-42") {
 		t.Fatalf("broadcast missing: a=%q b=%q", a, b)
 	}
-	if !strings.Contains(a, "only-on-a\r\n") || strings.Contains(b, "only-on-a") || !strings.Contains(b, "only-on-b\r\n") || strings.Contains(a, "only-on-b") {
+	if !strings.Contains(a, "only-on-a-1") || strings.Contains(b, "only-on-a") || !strings.Contains(b, "only-on-b-2") || strings.Contains(a, "only-on-b") {
 		t.Fatalf("input reached the wrong worker: a=%q b=%q", a, b)
+	}
+}
+
+// multiReader follows /api/term/multi and collects output and exit codes.
+type multiReader struct {
+	mu    sync.Mutex
+	out   map[string]*strings.Builder
+	exits map[string]int
+	done  chan struct{}
+}
+
+func followMulti(t *testing.T, host panelClient, ids []string) *multiReader {
+	t.Helper()
+	q := make([]string, len(ids))
+	m := &multiReader{out: map[string]*strings.Builder{}, exits: map[string]int{}, done: make(chan struct{})}
+	for i, id := range ids {
+		q[i] = id + ":0"
+		m.out[id] = &strings.Builder{}
+	}
+	req, _ := http.NewRequest("GET", host.base+"/api/term/multi?s="+strings.Join(q, ","), nil)
+	req.Header.Set("X-MeshCompute-Token", host.token)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil || res.StatusCode != 200 {
+		t.Fatalf("multi stream: %v %v", err, res)
+	}
+	t.Cleanup(func() { res.Body.Close() })
+	go func() {
+		defer close(m.done)
+		sc := bufio.NewScanner(res.Body)
+		sc.Buffer(make([]byte, 1<<20), 1<<20)
+		event := ""
+		for sc.Scan() {
+			l := sc.Text()
+			switch {
+			case strings.HasPrefix(l, "event:"):
+				event = strings.TrimSpace(l[6:])
+			case strings.HasPrefix(l, "data:"):
+				var v struct {
+					ID   string `json:"id"`
+					Data string `json:"data"`
+					Code int    `json:"code"`
+				}
+				_ = json.Unmarshal([]byte(strings.TrimSpace(l[5:])), &v)
+				m.mu.Lock()
+				if event == "output" && m.out[v.ID] != nil {
+					b, _ := base64.StdEncoding.DecodeString(v.Data)
+					m.out[v.ID].Write(b)
+				}
+				if event == "exit" {
+					m.exits[v.ID] = v.Code
+				}
+				all := len(m.exits) == len(ids)
+				m.mu.Unlock()
+				if all {
+					return
+				}
+			}
+		}
+	}()
+	return m
+}
+
+func (m *multiReader) text(id string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.out[id].String()
+}
+
+// TestLargeGroupTerminalGrid: 8 real workers with 3 terminals each fill the
+// 24-session limit exactly; a 25th is refused. All 24 shells share one
+// stream; each runs only its own command; typing into all reaches all 24;
+// the fleet shows all nine computers with a measured link.
+func TestLargeGroupTerminalGrid(t *testing.T) {
+	useTestShell(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hostDir := filepath.Join(t.TempDir(), "host")
+	hl := listen(t)
+	hc := config.Default()
+	hc.Listen = hl.Addr().String()
+	hc.Advertise = "https://" + hc.Listen
+	hc.GroupHost = true
+	if err := security.InitGroup(hostDir, hc.Listen, hc.Advertise, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Save(hostDir, hc); err != nil {
+		t.Fatal(err)
+	}
+	startAgent(t, ctx, hostDir, hc, hl)
+	const workers, perWorker = 8, 3
+	var ws []testWorker
+	for i := 0; i < workers; i++ {
+		ws = append(ws, joinWorker(t, ctx, hostDir, hc, fmt.Sprintf("w%d", i), func(c *config.Config) { c.AllowTerminal = true }))
+	}
+	panel, err := dashboard.New(dashboard.NewRemote(hostDir, hc), freeAddr(t), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	panel.EnableTerminal(hostDir)
+	panel.EnableTasks(ctx)
+	host := servePanel(t, ctx, panel)
+
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		var f dashboard.FleetResponse
+		host.do("GET", "/api/fleet", nil, &f)
+		ok := len(f.Nodes) == workers+1
+		for _, n := range f.Nodes[min(1, len(f.Nodes)):] {
+			ok = ok && n.Healthy && n.RTTMillis != nil && n.Status != nil && n.Status.Terminal
+		}
+		if ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("fleet never showed %d healthy workers: %d nodes", workers, len(f.Nodes))
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	type session struct {
+		id string
+		w  int
+	}
+	var sessions []session
+	for i, w := range ws {
+		for k := 0; k < perWorker; k++ {
+			var out struct{ ID, Node string }
+			if code := host.do("POST", "/api/term/open", map[string]any{"node": w.id, "cols": 80, "rows": 24}, &out); code != 200 || out.Node != w.id {
+				t.Fatalf("open %d on worker %d: HTTP %d", k, i, code)
+			}
+			sessions = append(sessions, session{out.ID, i})
+		}
+	}
+	var refused struct {
+		Error string `json:"error"`
+	}
+	if code := host.do("POST", "/api/term/open", map[string]any{"node": ws[0].id}, &refused); code == 200 || !strings.Contains(refused.Error, "too many") {
+		t.Fatalf("25th terminal: HTTP %d %+v", code, refused)
+	}
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		ok := true
+		for _, w := range ws {
+			ok = ok && w.a.TerminalCount() == perWorker
+		}
+		if ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			for i, w := range ws {
+				t.Logf("worker %d runs %d shells", i, w.a.TerminalCount())
+			}
+			t.Fatal("each worker must run exactly its own shells")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	ids := make([]string, len(sessions))
+	for i, s := range sessions {
+		ids[i] = s.id
+	}
+	m := followMulti(t, host, ids)
+	for i, id := range ids {
+		if code := host.do("POST", "/api/term/input", map[string]any{"id": id, "data": line(printed("own-", 1000+i))}, nil); code != http.StatusNoContent {
+			t.Fatalf("input %d: HTTP %d", i, code)
+		}
+	}
+	if code := host.do("POST", "/api/term/input", map[string]any{"ids": ids, "data": line(printed("all-", 77))}, nil); code != http.StatusNoContent {
+		t.Fatalf("broadcast: HTTP %d", code)
+	}
+	deadline = time.Now().Add(60 * time.Second)
+	for i := 0; i < len(ids); {
+		text := m.text(ids[i])
+		if strings.Contains(text, fmt.Sprintf("own-%d", 1000+i)) && strings.Contains(text, "all-77") {
+			i++
+			continue
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session %d (worker %d) output: %q", i, sessions[i].w, text)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	for i, id := range ids {
+		text := m.text(id)
+		for j := range ids {
+			if j != i && strings.Contains(text, fmt.Sprintf("own-%d", 1000+j)) {
+				t.Fatalf("session %d received session %d's command: %q", i, j, text)
+			}
+		}
+	}
+	for i, id := range ids {
+		host.do("POST", "/api/term/input", map[string]any{"id": id, "data": line(fmt.Sprintf("exit %d", 10+i%20))}, nil)
+	}
+	select {
+	case <-m.done:
+	case <-time.After(60 * time.Second):
+		m.mu.Lock()
+		t.Fatalf("only %d of %d shells reported their exit", len(m.exits), len(ids))
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, id := range ids {
+		if m.exits[id] != 10+i%20 {
+			t.Fatalf("session %d exit %d, want %d", i, m.exits[id], 10+i%20)
+		}
 	}
 }

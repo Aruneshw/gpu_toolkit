@@ -36,8 +36,12 @@ Usage: meshcompute [--home DIR] COMMAND
                                   with its own dashboard; --allow-terminal lets the
                                   host open a shell here; --tasks decides whether
                                   commands the host sends need your approval
-  pool start MODEL [--context N]  host: serve MODEL across every shared GPU
-  pool stop | pool status         host: stop or inspect the pooled model
+  pool start MODEL [--name N] [--context N] [--slots N] [--workers ID,..]
+       [--split local=1,ID=3] [--kv q8_0] [--kv-on-host] [--flash on] [--no-host-gpu]
+                                  host: serve MODEL across shared GPUs (one pool
+                                  per name; a worker lends its GPU to one pool)
+  pool stop [NAME] | pool remove NAME | pool status
+  model scan DIR                  list .gguf files in DIR (e.g. an external disk)
   revoke NODE_ID                  revoke an enrolled node on coordinator
   peer add NAME HTTPS_ENDPOINT    remember an explicitly enrolled worker
   start [--no-open]               run the agent (a worker also gets its dashboard)
@@ -49,7 +53,7 @@ Usage: meshcompute [--home DIR] COMMAND
   backend serve NAME [options]    launch a registered local GGUF
   model add NAME PATH             register local GGUF, no implicit downloads
   model list                      list registered local models
-  run NAME [--node NAME] [--prompt TEXT] [--max-tokens 128] [--context 2048]
+  run NAME [--node NAME] [--pool POOL] [--prompt TEXT] [--max-tokens 128] [--context 2048]
   network probe NAME              measure authenticated request RTT/throughput
   simulate                        labeled scheduling examples; no inference
   version                         print build version

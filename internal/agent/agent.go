@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -43,8 +44,12 @@ type Status struct {
 	Terminal bool `json:"terminal"`
 	// Tasks is this worker's task policy: ask, auto or off.
 	Tasks string `json:"tasks,omitempty"`
-	// Pool describes the pooled model on a group host.
-	Pool *PoolStatus `json:"pool,omitempty"`
+	// Pool is the first pooled model on a group host (older dashboards);
+	// Pools lists all of them.
+	Pool  *PoolStatus  `json:"pool,omitempty"`
+	Pools []PoolStatus `json:"pools,omitempty"`
+	// Sharing lists the workers able to lend a GPU (group host only).
+	Sharing []string `json:"sharing,omitempty"`
 }
 type Result struct {
 	backend.Response
@@ -64,8 +69,10 @@ type Agent struct {
 	broker      *tunnel.Broker
 	known       map[string]*x509.Certificate
 	workerCache map[string]Status
-	pool        *pool
-	resources   resourceCache
+	pools       *poolSet
+	// cfgMu serializes read-modify-write of the saved configuration.
+	cfgMu     sync.Mutex
+	resources resourceCache
 	// Worker side.
 	worker   bool
 	rpc      *backend.RPCServer
@@ -83,7 +90,7 @@ func New(dir string, c config.Config, audit io.Writer) *Agent {
 		a.broker, _ = tunnel.NewBroker(64)
 		a.known = make(map[string]*x509.Certificate)
 		a.workerCache = make(map[string]Status)
-		a.pool = newPool(a)
+		a.pools = newPools(a)
 	}
 	return a
 }
@@ -134,7 +141,7 @@ func (a *Agent) Status(ctx context.Context) (Status, error) {
 	}
 	st := Status{NodeID: id, Resources: s}
 	a.mu.Lock()
-	st.Busy = a.busy
+	st.Busy = a.busy || a.pools != nil && a.pools.inflight() > 0
 	st.Model = a.model
 	st.LastOutcome = a.last
 	st.TokensPerSecond = a.rate
@@ -147,9 +154,12 @@ func (a *Agent) Status(ctx context.Context) (Status, error) {
 	if rpc != nil {
 		_, st.RPCReady = rpc.Addr()
 	}
-	if a.pool != nil {
-		pool := a.pool.Status()
-		st.Pool = &pool
+	var pooled map[string]int
+	if a.pools != nil {
+		all := a.pools.Status()
+		st.Pools, st.Sharing = all.Pools, all.Sharing
+		st.Pool = a.pools.First()
+		pooled = a.pools.models()
 	}
 	b, e := backend.New(a.c.BackendURL)
 	if e == nil {
@@ -161,22 +171,120 @@ func (a *Agent) Status(ctx context.Context) (Status, error) {
 			st.BackendReady = true
 		}
 	}
+	// Every model a ready pool serves can be prompted on this computer.
+	if len(pooled) > 0 {
+		if st.Backend == nil {
+			st.Backend = &backend.Capabilities{Models: []string{}}
+		}
+		for m, ctxSize := range pooled {
+			found := false
+			for _, have := range st.Backend.Models {
+				found = found || have == m
+			}
+			if !found {
+				st.Backend.Models = append(st.Backend.Models, m)
+			}
+			if ctxSize > st.Backend.Context {
+				st.Backend.Context = ctxSize
+			}
+		}
+		sort.Strings(st.Backend.Models)
+		st.BackendReady = true
+	}
 	return st, nil
 }
+
+// target is where one request runs: a pool's server, or the configured
+// backend through the single inference slot.
+type target struct {
+	endpoint string
+	pool     *PoolStatus
+	release  func()
+}
+
+// admissionError is a refusal before any server was asked (no free slot,
+// context too large). Its message is safe to show the caller.
+type admissionError struct{ error }
+
+// Reason returns the message to show for err: an admission refusal as is,
+// anything else as a generic failure that does not leak backend internals.
+func Reason(err error) string {
+	var a admissionError
+	if errors.As(err, &a) {
+		return a.Error()
+	}
+	return "inference failed: verify registered alias, backend health, context budget, and worker availability; no retry performed"
+}
+
+// acquire reserves a place to run r: a request slot of a ready pool that
+// serves r.Model, otherwise the single slot of the configured backend.
+func (a *Agent) acquire(r backend.Request) (target, error) {
+	if a.pools != nil {
+		endpoint, st, release, ok, err := a.pools.route(r.Model, r.Context, r.Pool)
+		if err != nil {
+			return target{}, admissionError{err}
+		}
+		if ok {
+			a.mu.Lock()
+			a.model, a.last = r.Model, "running"
+			a.mu.Unlock()
+			return target{endpoint: endpoint, pool: &st, release: release}, nil
+		}
+	}
+	if err := a.begin(r); err != nil {
+		return target{}, admissionError{err}
+	}
+	return target{endpoint: a.c.BackendURL}, nil
+}
+
+func (a *Agent) finish(t target, outcome string, rate float64) {
+	if t.pool == nil {
+		a.end(outcome, rate)
+		return
+	}
+	t.release()
+	a.mu.Lock()
+	a.last = outcome
+	if rate > 0 {
+		a.rate = rate
+	}
+	a.mu.Unlock()
+	a.log.Printf("event=inference pool=%s outcome=%s", t.pool.Name, outcome)
+}
+
+func evidence(t target) (string, string) {
+	if t.pool != nil && len(t.pool.Workers) > 0 {
+		return "pooled", fmt.Sprintf("llama.cpp RPC pool %q across this computer and %d worker(s); per-device memory is in the pool status (from llama-server's own log).", t.pool.Name, len(t.pool.Workers))
+	}
+	return "single_node", "Backend node verified; CPU/GPU participation is not instrumented. No distributed execution claim."
+}
+
+// rejected records a request refused before it reached any server.
+func (a *Agent) rejected() {
+	a.mu.Lock()
+	a.last = "failed"
+	a.mu.Unlock()
+	a.log.Print("event=inference outcome=failed")
+}
+
 func (a *Agent) Generate(ctx context.Context, r backend.Request) (result Result, err error) {
-	if err = a.begin(r); err != nil {
+	if err = a.registered(r.Model); err != nil {
+		if !a.isBusy() {
+			a.rejected()
+		}
+		return Result{}, err
+	}
+	t, err := a.acquire(r)
+	if err != nil {
 		return Result{}, err
 	}
 	completed := false
 	defer func() {
 		if !completed {
-			a.end("failed", 0)
+			a.finish(t, "failed", 0)
 		}
 	}()
-	if err = a.registered(r.Model); err != nil {
-		return Result{}, err
-	}
-	b, e := a.adapter()
+	b, e := backend.New(t.endpoint)
 	if e != nil {
 		return Result{}, e
 	}
@@ -189,33 +297,32 @@ func (a *Agent) Generate(ctx context.Context, r backend.Request) (result Result,
 		return Result{}, e
 	}
 	completed = true
-	a.end("completed", response.TokensPerSecond)
-	mode, evidence := "single_node", "Backend node verified; CPU/GPU participation is not instrumented. No distributed execution claim."
-	if a.pool != nil {
-		if p := a.pool.Status(); p.State == "ready" && len(p.Workers) > 0 {
-			mode, evidence = "pooled", fmt.Sprintf("llama.cpp RPC pool across this computer and %d worker(s); per-device participation is reported by llama-server, not instrumented here.", len(p.Workers))
-		}
-	}
-	return Result{Response: response, NodeID: id, Model: r.Model, Mode: mode, DeviceEvidence: evidence}, nil
+	a.finish(t, "completed", response.TokensPerSecond)
+	mode, why := evidence(t)
+	return Result{Response: response, NodeID: id, Model: r.Model, Mode: mode, DeviceEvidence: why}, nil
 }
 
 // GenerateStream streams one completion through emit. It holds the same single
 // inference slot as Generate and releases it on every exit path.
 func (a *Agent) GenerateStream(ctx context.Context, r backend.Request, emit func(backend.Chunk) error) (err error) {
-	if err = a.begin(r); err != nil {
+	if err = a.registered(r.Model); err != nil {
+		if !a.isBusy() {
+			a.rejected()
+		}
+		return err
+	}
+	t, err := a.acquire(r)
+	if err != nil {
 		return err
 	}
 	completed := false
 	rate := 0.0
 	defer func() {
 		if !completed {
-			a.end("failed", 0)
+			a.finish(t, "failed", 0)
 		}
 	}()
-	if err = a.registered(r.Model); err != nil {
-		return err
-	}
-	b, e := a.adapter()
+	b, e := backend.New(t.endpoint)
 	if e != nil {
 		return e
 	}
@@ -235,7 +342,7 @@ func (a *Agent) GenerateStream(ctx context.Context, r backend.Request, emit func
 		return err
 	}
 	completed = true
-	a.end("completed", rate)
+	a.finish(t, "completed", rate)
 	if final != nil {
 		return emit(*final)
 	}
@@ -317,7 +424,7 @@ func (a *Agent) Handler() http.Handler {
 		}
 		result, e := a.Generate(r.Context(), req)
 		if e != nil {
-			http.Error(w, "inference failed: verify registered alias, backend health, context budget, and worker availability; no retry performed", 503)
+			http.Error(w, Reason(e), 503)
 			return
 		}
 		encode(w, result)
@@ -342,7 +449,7 @@ func (a *Agent) Handler() http.Handler {
 		if err != nil {
 			// The slot is already released. A generic message avoids leaking
 			// backend internals, and no retry is attempted.
-			_ = sw.Event("error", map[string]string{"error": "inference failed: verify registered alias, backend health, context budget, and worker availability; no retry performed"})
+			_ = sw.Event("error", map[string]string{"error": Reason(err)})
 		}
 	})
 	root := http.NewServeMux()
@@ -352,6 +459,7 @@ func (a *Agent) Handler() http.Handler {
 		root.Handle("/v1/workers", security.SelfOnly(a.dir, http.HandlerFunc(a.listWorkers)))
 		root.Handle("/v1/workers/", security.SelfOnly(a.dir, http.HandlerFunc(a.proxyWorker)))
 		root.Handle("/v1/pool", security.SelfOnly(a.dir, http.HandlerFunc(a.handlePool)))
+		root.Handle("/v1/pools", security.SelfOnly(a.dir, http.HandlerFunc(a.handlePools)))
 	}
 	root.Handle("/", security.Authorize(a.dir, api))
 	return root
@@ -405,7 +513,7 @@ func (a *Agent) ServeListener(ctx context.Context, listener net.Listener) error 
 		// Every worker holds a few idle connections plus its open streams.
 		listener = tunnel.LimitListener(listener, 1024)
 		workers.Add(1)
-		go func() { defer workers.Done(); a.pool.run(ctx) }()
+		go func() { defer workers.Done(); a.pools.run(ctx) }()
 	}
 	server := &http.Server{Addr: a.c.Listen, Handler: a.Handler(), TLSConfig: tlsConfig, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: backend.Timeout + 10*time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384, ErrorLog: log.New(io.Discard, "", 0)}
 	done := make(chan struct{})
@@ -424,4 +532,10 @@ func (a *Agent) ServeListener(ctx context.Context, listener net.Listener) error 
 		return nil
 	}
 	return e
+}
+
+func (a *Agent) isBusy() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.busy
 }

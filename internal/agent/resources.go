@@ -18,9 +18,14 @@ type resourceCache struct {
 	err        error
 	at         time.Time
 	refreshing chan struct{} // non-nil while a discovery runs
+	waited     bool          // a request already gave up waiting for the first one
 }
 
 const resourceMaxAge = 4 * time.Second
+
+// firstWait bounds how long a status request waits for the very first
+// discovery; after that it answers with resource.Basic until discovery ends.
+var firstWait = 2 * time.Second
 
 func (c *resourceCache) get(ctx context.Context, dir string) (resource.Snapshot, error) {
 	c.mu.Lock()
@@ -41,13 +46,26 @@ func (c *resourceCache) get(ctx context.Context, dir string) (resource.Snapshot,
 	}
 	wait := c.refreshing
 	snap, err := c.snap, c.err
+	waited := c.waited
 	c.mu.Unlock()
 	if fresh || wait == nil {
 		return snap, err
 	}
-	// First call: nothing to serve yet.
+	// First discovery still running: wait a little, then answer with what is
+	// instant rather than let a slow nvidia-smi make this computer look
+	// unreachable.
+	if waited {
+		return resource.Basic(ctx, dir), nil
+	}
+	timer := time.NewTimer(firstWait)
+	defer timer.Stop()
 	select {
 	case <-wait:
+	case <-timer.C:
+		c.mu.Lock()
+		c.waited = true
+		c.mu.Unlock()
+		return resource.Basic(ctx, dir), nil
 	case <-ctx.Done():
 		return resource.Snapshot{}, ctx.Err()
 	}
