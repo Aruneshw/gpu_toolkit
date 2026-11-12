@@ -45,7 +45,9 @@ func TestSlowGPUDiscoveryDoesNotBlockStatus(t *testing.T) {
 	if s, _ = c.get(context.Background(), t.TempDir()); time.Since(start) > 200*time.Millisecond || len(s.GPUs) != 0 {
 		t.Fatalf("second request waited %s", time.Since(start))
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	// Full discovery on Windows also runs PowerShell, which takes many
+	// seconds on a busy CI machine; discovery itself is bounded at 45 s.
+	deadline := time.Now().Add(45 * time.Second)
 	for {
 		s, _ = c.get(context.Background(), t.TempDir())
 		if len(s.GPUs) == 1 && s.GPUs[0].Name == "Slow GPU" {

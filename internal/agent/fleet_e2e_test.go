@@ -158,7 +158,8 @@ func TestFleetAndTerminalGridEndToEnd(t *testing.T) {
 	if f.Nodes[0].Name != "local" || f.Nodes[0].RTTMillis != nil {
 		t.Fatalf("host entry: %+v", f.Nodes[0])
 	}
-	if rtt := *byName(f, wa.id).RTTMillis; rtt <= 0 || rtt > 2000 {
+	// Windows' clock is coarse: a loopback round trip can read 0.
+	if rtt := *byName(f, wa.id).RTTMillis; rtt < 0 || rtt > 2000 {
 		t.Fatalf("implausible loopback round trip %v ms", rtt)
 	}
 

@@ -58,7 +58,8 @@ func TestMeshPathAndLinkMeasurement(t *testing.T) {
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
-	if *link.RTTMillis <= 0 || *link.RTTMillis > 250 {
+	// Windows' clock is coarse: a loopback round trip can read 0.
+	if *link.RTTMillis < 0 || *link.RTTMillis > 250 {
 		t.Fatalf("implausible loopback round trip: %+v", link)
 	}
 	if link.Path != "local" {

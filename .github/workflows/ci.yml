@@ -79,7 +79,10 @@ jobs:
         with:
           node-version: 22
       - name: Fleet view, terminal grid, tasks and worker approval in a real browser
-        run: CHROME="$(command -v google-chrome || command -v chromium)" scripts/ui-test.sh
+        run: |
+          set -o pipefail
+          CHROME="$(command -v google-chrome || command -v chromium)" scripts/ui-test.sh 2>&1 | tee ui.log || {
+            grep -E '^(FAIL|not every|setup failed)|Error' ui.log | head -20 | sed 's/^/::error::/'; exit 1; }
 
   cross:
     name: cross-compile

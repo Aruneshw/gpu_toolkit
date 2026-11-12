@@ -50,7 +50,7 @@
     if (typeof ms !== "number") return "";
     var cls = ms < 30 ? "good" : (ms < 120 ? "mid" : "bad");
     var how = link && link.measured === "tunnel" ? "round trip through the encrypted tunnel the pool uses (median of the last 30 s)" : "time of one status request through the encrypted link, including a TLS handshake";
-    return "<span class=\"rtt " + cls + "\" data-rtt title=\"" + how + "\">" + (ms < 10 ? ms.toFixed(1) : Math.round(ms)) + " ms</span>";
+    return "<span class=\"rtt " + cls + "\" data-rtt title=\"" + how + "\">" + (ms < 0.05 ? "&lt;1" : ms < 10 ? ms.toFixed(1) : Math.round(ms)) + " ms</span>";
   }
   var pathNames = { relay: "via relay", mesh: "mesh VPN", direct: "direct", local: "same computer" };
   function pathBadge(link) {
